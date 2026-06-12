@@ -1,0 +1,3 @@
+[submodule "homelab-vm-provisioner"]
+	path = homelab-vm-provisioner
+	url = git@github.com:mrniceguy127/homelab-vm-provisioner.git
