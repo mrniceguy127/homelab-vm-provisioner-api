@@ -233,6 +233,19 @@ def handle_list():
     emit({"vms": [inspect_vm(vm_name) for vm_name in known_vm_names()]})
 
 
+def handle_host_list():
+    """Emit a JSON response containing all libvirt VM names on the host.
+
+    Returns only names returned by ``virsh list --all --name`` and does not add
+    persisted state-only entries.
+
+    Raises:
+        SystemExit: Raised by :func:`emit` after printing the JSON response.
+    """
+
+    emit({"vms": list_virsh_vms()})
+
+
 def handle_inspect(vm_name):
     """Emit a JSON response containing one VM snapshot.
 
@@ -251,11 +264,11 @@ def build_parser():
 
     Returns:
         argparse.ArgumentParser: Parser for ``create``, ``destroy``,
-        ``inspect``, and ``list`` bridge commands.
+        ``inspect``, ``list``, and ``host-list`` bridge commands.
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("create", "destroy", "inspect", "list"))
+    parser.add_argument("command", choices=("create", "destroy", "inspect", "list", "host-list"))
     parser.add_argument("value", nargs="?")
     return parser
 
@@ -288,6 +301,9 @@ def main():
             if not args.value:
                 raise ValueError("inspect requires a VM name")
             handle_inspect(args.value)
+
+        if args.command == "host-list":
+            handle_host_list()
 
         handle_list()
     except Exception as exc:  # pragma: no cover - bridge error path

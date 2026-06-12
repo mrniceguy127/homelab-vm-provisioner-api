@@ -9,11 +9,20 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node ./node_modules/vitest/vitest.mjs run",
+    "coverage": "node ./node_modules/vitest/vitest.mjs run --coverage",
+    "docs:build": "node scripts/build-docs.js",
+    "build": "npm run coverage && npm run docs:build"
   },
   "dependencies": {
     "express": "^4.21.2",
     "js-yaml": "^4.1.0",
     "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9",
+    "documentation": "^14.0.3",
+    "supertest": "^7.1.1",
+    "vitest": "^2.1.9"
   }
 }

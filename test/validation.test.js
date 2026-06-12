@@ -1,5 +1,4 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from 'vitest';
 
 import { parseCreateVmRequest } from '../src/validation.js';
 
@@ -29,13 +28,12 @@ test('accepts a valid VM create request', () => {
     sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey user@example',
   });
 
-  assert.equal(payload.config.vm.name, 'devbox');
-  assert.equal(payload.sshPublicKey.startsWith('ssh-ed25519 '), true);
+  expect(payload.config.vm.name).toBe('devbox');
+  expect(payload.sshPublicKey.startsWith('ssh-ed25519 ')).toBe(true);
 });
 
 test('rejects VM names longer than 12 characters', () => {
-  assert.throws(
-    () =>
+  expect(() =>
       parseCreateVmRequest({
         config: {
           vm: {
@@ -46,14 +44,11 @@ test('rejects VM names longer than 12 characters', () => {
             disk_gb: 40,
           },
         },
-      }),
-    /12 characters or fewer/,
-  );
+      })).toThrow(/12 characters or fewer/);
 });
 
 test('requires explicit nat-custom network details when subnet_prefix is omitted', () => {
-  assert.throws(
-    () =>
+  expect(() =>
       parseCreateVmRequest({
         config: {
           vm: {
@@ -67,7 +62,5 @@ test('requires explicit nat-custom network details when subnet_prefix is omitted
             mode: 'nat-custom',
           },
         },
-      }),
-    /Required when network.mode is nat-custom/,
-  );
+      })).toThrow(/Required when network.mode is nat-custom/);
 });

@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
@@ -7,6 +6,14 @@ import { apiRoot, getVmLogPath, provisionerRoot } from './config-store.js';
 const bridgePath = path.join(apiRoot, 'bridge', 'hlvmp_bridge.py');
 const pythonBin = process.env.HLVMP_PYTHON_BIN || 'python3';
 
+/**
+ * Create an Error object with an attached HTTP status code.
+ *
+ * @param {string} message - Human-readable error message.
+ * @param {number} statusCode - HTTP status code.
+ * @param {object|null} [details=null] - Optional structured error details.
+ * @returns {Error} Decorated error instance.
+ */
 function createCommandError(message, statusCode, details = null) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -14,6 +21,13 @@ function createCommandError(message, statusCode, details = null) {
   return error;
 }
 
+/**
+ * Parse structured JSON bridge output from stdout or stderr.
+ *
+ * @param {string} stdout - Captured standard output.
+ * @param {string} stderr - Captured standard error.
+ * @returns {object|null} Parsed JSON payload when present.
+ */
 function parseBridgeOutput(stdout, stderr) {
   for (const value of [stdout.trim(), stderr.trim()]) {
     if (!value) {
@@ -30,6 +44,13 @@ function parseBridgeOutput(stdout, stderr) {
   return null;
 }
 
+/**
+ * Map a bridge-side error type to an HTTP status code.
+ *
+ * @param {string} errorType - Bridge error type.
+ * @param {string} command - Bridge command name.
+ * @returns {number} HTTP status code.
+ */
 function mapBridgeErrorToStatus(errorType, command) {
   if (errorType === 'ValueError') {
     return 400;
@@ -46,6 +67,13 @@ function mapBridgeErrorToStatus(errorType, command) {
   return 500;
 }
 
+/**
+ * Run a Python bridge command and parse its JSON output.
+ *
+ * @param {string} command - Bridge command name.
+ * @param {string} [value] - Optional command argument.
+ * @returns {Promise<object>} Parsed bridge payload.
+ */
 export function runBridgeCommand(command, value) {
   return new Promise((resolve, reject) => {
     const args = [bridgePath, command];
@@ -91,35 +119,108 @@ export function runBridgeCommand(command, value) {
   });
 }
 
+/**
+ * Provision a VM from a saved config path.
+ *
+ * @param {string} configPath - Saved config path.
+ * @returns {Promise<object>} Bridge response payload.
+ */
 export async function createVm(configPath) {
   return runBridgeCommand('create', configPath);
 }
 
+/**
+ * Destroy a VM by name.
+ *
+ * @param {string} vmName - VM name.
+ * @returns {Promise<object>} Bridge response payload.
+ */
 export async function destroyVm(vmName) {
   return runBridgeCommand('destroy', vmName);
 }
 
+/**
+ * List configured VM snapshots via the bridge.
+ *
+ * @returns {Promise<object[]>} VM inventory payload.
+ */
 export async function listVms() {
   const payload = await runBridgeCommand('list');
   return payload.vms || [];
 }
 
+/**
+ * List all libvirt VM names visible on the host.
+ *
+ * @returns {Promise<string[]>} Host libvirt VM names.
+ */
+export async function listHostVmNames() {
+  const payload = await runBridgeCommand('host-list');
+  return payload.vms || [];
+}
+
+/**
+ * Inspect one VM through the Python bridge.
+ *
+ * @param {string} vmName - VM name.
+ * @returns {Promise<object>} VM detail payload.
+ */
 export async function inspectVm(vmName) {
   const payload = await runBridgeCommand('inspect', vmName);
   return payload.vm;
 }
 
+/**
+ * Ensure a log path exists and is readable through sudo.
+ *
+ * @param {string} logPath - Absolute QEMU log path.
+ * @returns {Promise<void>} Resolves when the path exists.
+ */
+function ensurePrivilegedLogPath(logPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('sudo', ['-n', 'test', '-f', logPath], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(createCommandError(error.message, 500));
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      const message = stderr.trim();
+      if (message.includes('a password is required')) {
+        reject(createCommandError('Sudo authorization for log access has expired. Restart the API from an interactive terminal or refresh sudo with `sudo -v`.', 503));
+        return;
+      }
+
+      reject(createCommandError(`VM log was not found: ${logPath}`, 404));
+    });
+  });
+}
+
+/**
+ * Read a privileged snapshot of VM logs.
+ *
+ * @param {string} vmName - VM name.
+ * @param {number} [lines=200] - Number of lines to read.
+ * @returns {Promise<string>} Log snapshot text.
+ */
 export async function readVmLog(vmName, lines = 200) {
   const logPath = getVmLogPath(vmName);
-
-  try {
-    await fs.access(logPath);
-  } catch {
-    throw createCommandError(`VM log was not found: ${logPath}`, 404);
-  }
+  await ensurePrivilegedLogPath(logPath);
 
   return new Promise((resolve, reject) => {
-    const child = spawn('tail', ['-n', String(lines), logPath], {
+    const child = spawn('sudo', ['-n', 'tail', '-n', String(lines), logPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -144,26 +245,34 @@ export async function readVmLog(vmName, lines = 200) {
         return;
       }
 
+      if (stderr.includes('a password is required')) {
+        reject(createCommandError('Sudo authorization for log access has expired. Restart the API from an interactive terminal or refresh sudo with `sudo -v`.', 503));
+        return;
+      }
+
       reject(createCommandError(stderr.trim() || `Failed to read log for ${vmName}`, 500));
     });
   });
 }
 
+/**
+ * Stream privileged VM logs to an Express response using Server-Sent Events.
+ *
+ * @param {string} vmName - VM name.
+ * @param {import('express').Response} response - Express response object.
+ * @param {number} [lines=100] - Number of initial lines to replay.
+ * @returns {Promise<void>} Resolves when the stream is attached.
+ */
 export async function streamVmLog(vmName, response, lines = 100) {
   const logPath = getVmLogPath(vmName);
-
-  try {
-    await fs.access(logPath);
-  } catch {
-    throw createCommandError(`VM log was not found: ${logPath}`, 404);
-  }
+  await ensurePrivilegedLogPath(logPath);
 
   response.setHeader('Content-Type', 'text/event-stream');
   response.setHeader('Cache-Control', 'no-cache');
   response.setHeader('Connection', 'keep-alive');
   response.flushHeaders();
 
-  const child = spawn('tail', ['-n', String(lines), '-F', logPath], {
+  const child = spawn('sudo', ['-n', 'tail', '-n', String(lines), '-F', logPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -176,7 +285,12 @@ export async function streamVmLog(vmName, response, lines = 100) {
   });
 
   child.stderr.on('data', (chunk) => {
-    response.write(`event: error\ndata: ${JSON.stringify({ message: chunk.toString() })}\n\n`);
+    const message = chunk.toString();
+    response.write(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
+
+    if (message.includes('a password is required')) {
+      response.end();
+    }
   });
 
   const cleanup = () => {

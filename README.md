@@ -24,6 +24,18 @@ The nested provisioner is the source of truth for actual VM creation, destructio
 
 ## Install
 
+For the full workspace setup from the project root, including Python provisioner setup, npm installs, client build, and deployment of the client bundle into the API `public/` directory, run:
+
+```bash
+./setup --skip-system-packages
+```
+
+For a repeatable rebuild after dependencies are already installed, run:
+
+```bash
+./build
+```
+
 1. Initialize submodules:
 
 ```bash
@@ -48,6 +60,16 @@ python3 -m pip install -e ./homelab-vm-provisioner
 npm start
 ```
 
+Or from the workspace root:
+
+```bash
+./start
+```
+
+The API must be started as your normal user, not as `root`.
+
+At startup it securely runs `sudo -v` so later `virsh`/libvirt commands can use `sudo` only where needed. During the same startup preflight it also repairs ownership under the legacy API runtime directory plus the nested provisioner `configs/` and `vm/` directories so future config/state files stay user-owned.
+
 Default port: `3000`
 
 ## Environment Variables
@@ -56,20 +78,40 @@ Default port: `3000`
 | --- | --- | --- |
 | `PORT` | `3000` | Express listen port |
 | `HLVMP_PROVISIONER_DIR` | `./homelab-vm-provisioner` | Path to the nested Python provisioner checkout |
-| `HLVMP_API_RUNTIME_DIR` | `./runtime` | Root for saved configs, user SSH keys, and VM data paths managed by the API |
+| `HLVMP_API_RUNTIME_DIR` | `./runtime` | Legacy migration source for older API-managed config, key, and VM data files |
 | `HLVMP_PYTHON_BIN` | `python3` | Python executable used for the bridge process |
 
-## Runtime Files
+## Provisioner Paths
 
-The API writes its own runtime-managed files under `runtime/` by default:
+The API now uses the nested Python provisioner's default directories instead of the old API-local `runtime/` folder:
 
-- `runtime/configs/<vm>.yaml`: Saved YAML config per VM
-- `runtime/keys/users/<file>.pub`: Uploaded tenant SSH public keys
-- `runtime/vm-data/<vm>/`: Default generated `paths.vm_data_dir` used in saved configs
+- `homelab-vm-provisioner/configs/<vm>.yaml`: Saved YAML config per VM
+- `homelab-vm-provisioner/vm/keys/users/<file>.pub`: Uploaded tenant SSH public keys
+- `homelab-vm-provisioner/vm/data/<vm>/`: Default per-VM rendered data directory
+- `public/`: Built client files served by the API
 
-If `sshPublicKey` is present in a create request, the API writes the public key to `runtime/keys/users/` and rewrites `config.vm.ssh_key_file` to the resulting absolute path before saving the YAML file.
+If `sshPublicKey` is present in a create request, the API writes the public key to `homelab-vm-provisioner/vm/keys/users/` and rewrites `config.vm.ssh_key_file` to the resulting absolute path before saving the YAML file.
 
 If `sshPublicKey` is omitted but `config.vm.ssh_key_file` is present, that path must already be absolute and readable on disk.
+
+Legacy files under `runtime/` are migrated into these provisioner-default directories during API startup.
+
+## Developer Commands
+
+```bash
+npm test
+npm run coverage
+npm run docs:build
+npm run build
+```
+
+Helper scripts mirroring the Python provisioner workflow are also available:
+
+```bash
+./scripts/test
+./scripts/coverage
+./scripts/docs-build
+```
 
 ## Request Model
 
@@ -107,6 +149,7 @@ The main write endpoints accept this shape:
 ### Validation Rules
 
 - `config.vm.name`: required, max 12 chars
+- `config.vm.name`: must also be unique across saved configs and all libvirt VM names already present on the host
 - `config.vm.user`: required
 - `config.vm.ram_mb`, `vcpus`, `disk_gb`: required positive integers
 - `config.vm.trust`: `trusted` or `untrusted`
@@ -190,6 +233,8 @@ Response `201`:
 
 Validates and saves a VM config, then provisions the VM through the Python bridge.
 
+This route rejects duplicate VM names. Use `POST /api/vms/:name/provision` to create a VM later from an already-saved config.
+
 Request body: same as `POST /api/vms/configs`
 
 Response `201`:
@@ -222,8 +267,10 @@ Response `201`:
 
 Returns the merged VM view from:
 
-- libvirt and provisioner state via the Python bridge
 - API-managed stored configs under `runtime/configs/`
+- live libvirt/provisioner inspection only for those configured VM names
+
+This endpoint intentionally returns only VMs that have saved configs.
 
 Response `200`:
 
@@ -264,6 +311,8 @@ Response `200`:
 ### `GET /api/vms/:name`
 
 Returns detailed information for one VM. This can still succeed when a stored config exists but the live provisioner inspection fails; in that case `provisionerError` will be populated.
+
+This endpoint only works for VM names that already have saved configs.
 
 Response `200`:
 
@@ -360,11 +409,35 @@ Response `200`:
 }
 ```
 
+### `POST /api/vms/:name/provision`
+
+Provisions a VM from an existing saved config under `runtime/configs/<name>.yaml`.
+
+Use this when a config already exists and you want to create the VM later without resubmitting the whole config payload.
+
+The saved config name must still be unique across all libvirt VMs on the host at provision time.
+
+Response `201`:
+
+```json
+{
+  "name": "devbox",
+  "configPath": "/abs/path/runtime/configs/devbox.yaml",
+  "provisioned": {
+    "success": true,
+    "output": "Created VM\n==========\n...",
+    "config_path": "/abs/path/runtime/configs/devbox.yaml"
+  }
+}
+```
+
 ### `DELETE /api/vms/:name`
 
 Destroys the VM through the Python provisioner bridge.
 
 This endpoint does not delete the API-managed stored config under `runtime/configs/`. That allows the same VM definition to be reviewed or reprovisioned later.
+
+This endpoint only operates on VM names that already have saved configs.
 
 Response `200`:
 
@@ -383,6 +456,8 @@ Response `200`:
 
 Returns the latest log text from `/var/log/libvirt/qemu/<vm>.log`.
 
+This endpoint only works for VM names that already have saved configs.
+
 Query params:
 
 - `lines`: optional integer, `1..5000`, default `200`
@@ -400,6 +475,8 @@ Response `200`:
 ### `GET /api/vms/:name/logs/stream`
 
 Streams VM logs using Server-Sent Events.
+
+This endpoint only works for VM names that already have saved configs.
 
 Query params:
 
@@ -467,20 +544,14 @@ Response `404`:
 }
 ```
 
-### Bridge/Provisioner Conflict
+### Duplicate Name Or Provisioner Conflict
 
 Response `409`:
 
 ```json
 {
-  "error": "VM not found: devbox",
-  "details": {
-    "success": false,
-    "error": {
-      "type": "RuntimeError",
-      "message": "VM not found: devbox"
-    }
-  }
+  "error": "VM name is already in use by a saved config: devbox",
+  "details": null
 }
 ```
 
