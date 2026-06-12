@@ -4,6 +4,8 @@ Express API for the `homelab-vm-provisioner` Python module.
 
 This service stores VM configs, validates requests, calls the nested Python provisioner, exposes VM inventory/details endpoints, and provides both snapshot and streaming log access.
 
+When this repository is checked out as part of the full `homelab-vm-provisioner-webapp` workspace, prefer the workspace root `setup`, `build`, and `start` scripts for end-to-end setup and local runs.
+
 ## Architecture
 
 - `src/app.js`: Express routes and HTTP error handling.
@@ -24,7 +26,19 @@ The nested provisioner is the source of truth for actual VM creation, destructio
 
 ## Install
 
-For the full workspace setup from the project root, including Python provisioner setup, npm installs, client build, and deployment of the client bundle into the API `public/` directory, run:
+If you did not clone with submodules, initialize them first:
+
+```bash
+git submodule update --init --recursive
+```
+
+For the full workspace setup from the workspace root, including Python provisioner setup, npm installs, client build, and deployment of the client bundle into the API `public/` directory, run:
+
+```bash
+./setup
+```
+
+If system packages are already installed on the host, run:
 
 ```bash
 ./setup --skip-system-packages
@@ -36,25 +50,19 @@ For a repeatable rebuild after dependencies are already installed, run:
 ./build
 ```
 
-1. Initialize submodules:
-
-```bash
-git submodule update --init --recursive
-```
-
-2. Install Node dependencies:
+1. Install Node dependencies:
 
 ```bash
 npm install
 ```
 
-3. Install the nested Python provisioner dependencies:
+2. Install the nested Python provisioner dependencies:
 
 ```bash
 python3 -m pip install -e ./homelab-vm-provisioner
 ```
 
-4. Start the API:
+3. Start the API:
 
 ```bash
 npm start
@@ -87,12 +95,17 @@ The API now uses the nested Python provisioner's default directories instead of 
 
 - `homelab-vm-provisioner/configs/<vm>.yaml`: Saved YAML config per VM
 - `homelab-vm-provisioner/vm/keys/users/<file>.pub`: Uploaded tenant SSH public keys
+- `homelab-vm-provisioner/vm/scripts/<file>.sh`: Uploaded post-cloud-init setup scripts
 - `homelab-vm-provisioner/vm/data/<vm>/`: Default per-VM rendered data directory
 - `public/`: Built client files served by the API
 
 If `sshPublicKey` is present in a create request, the API writes the public key to `homelab-vm-provisioner/vm/keys/users/` and rewrites `config.vm.ssh_key_file` to the resulting absolute path before saving the YAML file.
 
 If `sshPublicKey` is omitted but `config.vm.ssh_key_file` is present, that path must already be absolute and readable on disk.
+
+If `setupScript` is present in a create request, the API writes the script to `homelab-vm-provisioner/vm/scripts/` and rewrites `config.scripts.setup_script_file` to the resulting absolute path before saving the YAML file.
+
+If `setupScript` is omitted but `config.scripts.setup_script_file` is present, that path must already be absolute and readable on disk.
 
 Legacy files under `runtime/` are migrated into these provisioner-default directories during API startup.
 
@@ -142,7 +155,8 @@ The main write endpoints accept this shape:
       }
     ]
   },
-  "sshPublicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@example"
+  "sshPublicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@example",
+  "setupScript": "#!/usr/bin/env bash\necho ready >/tmp/hlvmp-ready"
 }
 ```
 
@@ -151,6 +165,7 @@ The main write endpoints accept this shape:
 - `config.vm.name`: required, max 12 chars
 - `config.vm.name`: must also be unique across saved configs and all libvirt VM names already present on the host
 - `config.vm.user`: required
+- `config.vm.ssh_key_file`: must be absolute and readable when `sshPublicKey` is not provided
 - `config.vm.ram_mb`, `vcpus`, `disk_gb`: required positive integers
 - `config.vm.trust`: `trusted` or `untrusted`
 - `config.network.mode`: `nat-auto`, `nat-custom`, or `bridge`
@@ -161,6 +176,8 @@ The main write endpoints accept this shape:
 - `config.ports[*].host` and `guest`: integers in `1..65535`
 - `config.ports[*].proto`: `tcp` or `udp`
 - `config.dns.resolvers[*]`: valid IP addresses
+- `config.scripts.setup_script_file`: must be absolute and readable when `setupScript` is not provided
+- `setupScript`: optional non-empty string
 - For `nat-custom`, either `subnet_prefix` must be present or all of `cidr`, `gateway`, `vm_ip`, `dhcp_start`, and `dhcp_end` must be present
 - For `bridge`, `subnet_prefix` is rejected
 
@@ -207,20 +224,20 @@ Response `201`:
 ```json
 {
   "vmName": "devbox",
-  "keyPath": "/abs/path/runtime/keys/users/devbox.pub",
-  "configPath": "/abs/path/runtime/configs/devbox.yaml",
+  "keyPath": "/abs/path/homelab-vm-provisioner/vm/keys/users/devbox.pub",
+  "configPath": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
   "rawConfig": "vm:\n  name: devbox\n...",
   "config": {
     "vm": {
       "name": "devbox",
       "user": "matt",
-      "ssh_key_file": "/abs/path/runtime/keys/users/devbox.pub",
+      "ssh_key_file": "/abs/path/homelab-vm-provisioner/vm/keys/users/devbox.pub",
       "ram_mb": 4096,
       "vcpus": 2,
       "disk_gb": 40
     },
     "paths": {
-      "vm_data_dir": "/abs/path/runtime/vm-data/devbox"
+      "vm_data_dir": "/abs/path/homelab-vm-provisioner/vm/data/devbox"
     },
     "network": {
       "mode": "nat-auto"
@@ -242,14 +259,14 @@ Response `201`:
 ```json
 {
   "vmName": "devbox",
-  "keyPath": "/abs/path/runtime/keys/users/devbox.pub",
-  "configPath": "/abs/path/runtime/configs/devbox.yaml",
+  "keyPath": "/abs/path/homelab-vm-provisioner/vm/keys/users/devbox.pub",
+  "configPath": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
   "rawConfig": "vm:\n  name: devbox\n...",
   "config": {
     "vm": {
       "name": "devbox",
       "user": "matt",
-      "ssh_key_file": "/abs/path/runtime/keys/users/devbox.pub",
+      "ssh_key_file": "/abs/path/homelab-vm-provisioner/vm/keys/users/devbox.pub",
       "ram_mb": 4096,
       "vcpus": 2,
       "disk_gb": 40
@@ -258,7 +275,7 @@ Response `201`:
   "provisioned": {
     "success": true,
     "output": "Created VM\n==========\n...",
-    "config_path": "/abs/path/runtime/configs/devbox.yaml"
+    "config_path": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml"
   }
 }
 ```
@@ -267,7 +284,7 @@ Response `201`:
 
 Returns the merged VM view from:
 
-- API-managed stored configs under `runtime/configs/`
+- API-managed stored configs under `homelab-vm-provisioner/configs/`
 - live libvirt/provisioner inspection only for those configured VM names
 
 This endpoint intentionally returns only VMs that have saved configs.
@@ -299,7 +316,7 @@ Response `200`:
           "proto": "tcp"
         }
       ],
-      "config_path": "/abs/path/runtime/configs/devbox.yaml",
+      "config_path": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
       "state_path": "/abs/path/homelab-vm-provisioner/vm/state/devbox.yaml",
       "log_path": "/var/log/libvirt/qemu/devbox.log",
       "log_exists": true
@@ -345,9 +362,9 @@ Response `200`:
       }
     ],
     "admin_private_key": "/abs/path/homelab-vm-provisioner/vm/keys/admin/devbox_admin_ed25519",
-    "vm_data_dir": "/abs/path/runtime/vm-data/devbox",
+    "vm_data_dir": "/abs/path/homelab-vm-provisioner/vm/data/devbox",
     "trust": "trusted",
-    "config_path": "/abs/path/runtime/configs/devbox.yaml",
+    "config_path": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
     "config": {
       "vm": {
         "name": "devbox",
@@ -362,7 +379,7 @@ Response `200`:
     "log_path": "/var/log/libvirt/qemu/devbox.log",
     "log_exists": true,
     "configured": true,
-    "storedConfigPath": "/abs/path/runtime/configs/devbox.yaml",
+    "storedConfigPath": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
     "storedConfig": {
       "vm": {
         "name": "devbox",
@@ -395,7 +412,7 @@ Response `200`:
 ```json
 {
   "vmName": "devbox",
-  "configPath": "/abs/path/runtime/configs/devbox.yaml",
+  "configPath": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
   "rawConfig": "vm:\n  name: devbox\n...",
   "config": {
     "vm": {
@@ -411,7 +428,7 @@ Response `200`:
 
 ### `POST /api/vms/:name/provision`
 
-Provisions a VM from an existing saved config under `runtime/configs/<name>.yaml`.
+Provisions a VM from an existing saved config under `homelab-vm-provisioner/configs/<name>.yaml`.
 
 Use this when a config already exists and you want to create the VM later without resubmitting the whole config payload.
 
@@ -422,11 +439,11 @@ Response `201`:
 ```json
 {
   "name": "devbox",
-  "configPath": "/abs/path/runtime/configs/devbox.yaml",
+  "configPath": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml",
   "provisioned": {
     "success": true,
     "output": "Created VM\n==========\n...",
-    "config_path": "/abs/path/runtime/configs/devbox.yaml"
+    "config_path": "/abs/path/homelab-vm-provisioner/configs/devbox.yaml"
   }
 }
 ```
@@ -435,7 +452,7 @@ Response `201`:
 
 Destroys the VM through the Python provisioner bridge.
 
-This endpoint does not delete the API-managed stored config under `runtime/configs/`. That allows the same VM definition to be reviewed or reprovisioned later.
+This endpoint does not delete the API-managed stored config under `homelab-vm-provisioner/configs/`. That allows the same VM definition to be reviewed or reprovisioned later.
 
 This endpoint only operates on VM names that already have saved configs.
 
@@ -448,6 +465,111 @@ Response `200`:
     "success": true,
     "output": "",
     "name": "devbox"
+  }
+}
+```
+
+### `POST /api/vms/:name/start`
+
+Starts a configured VM through the Python provisioner bridge.
+
+Response `200`:
+
+```json
+{
+  "name": "devbox",
+  "started": {
+    "success": true,
+    "name": "devbox"
+  }
+}
+```
+
+### `POST /api/vms/:name/stop`
+
+Stops a configured VM through the Python provisioner bridge.
+
+Response `200`:
+
+```json
+{
+  "name": "devbox",
+  "stopped": {
+    "success": true,
+    "name": "devbox"
+  }
+}
+```
+
+### `POST /api/vms/:name/clone`
+
+Creates a new saved config and clones the source VM into that new target definition.
+
+Request body: same as `POST /api/vms/configs`
+
+Response `201`:
+
+```json
+{
+  "sourceName": "devbox",
+  "vmName": "clonebox",
+  "configPath": "/abs/path/homelab-vm-provisioner/configs/clonebox.yaml",
+  "cloned": {
+    "success": true,
+    "source_name": "devbox",
+    "config_path": "/abs/path/homelab-vm-provisioner/configs/clonebox.yaml"
+  }
+}
+```
+
+### `POST /api/vms/:name/snapshots`
+
+Creates a restore point for a configured VM.
+
+Response `201`:
+
+```json
+{
+  "name": "devbox",
+  "snapshot": {
+    "success": true,
+    "name": "devbox"
+  }
+}
+```
+
+### `POST /api/vms/:name/snapshots/:snapshotId/restore`
+
+Restores a VM from a restore point.
+
+Response `200`:
+
+```json
+{
+  "name": "devbox",
+  "snapshotId": "before-upgrade",
+  "restored": {
+    "success": true,
+    "name": "devbox",
+    "snapshotId": "before-upgrade"
+  }
+}
+```
+
+### `DELETE /api/vms/:name/snapshots/:snapshotId`
+
+Deletes a restore point from a configured VM.
+
+Response `200`:
+
+```json
+{
+  "name": "devbox",
+  "snapshotId": "before-upgrade",
+  "deleted": {
+    "success": true,
+    "name": "devbox",
+    "snapshotId": "before-upgrade"
   }
 }
 ```

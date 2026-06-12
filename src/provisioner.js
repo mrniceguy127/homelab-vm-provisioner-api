@@ -57,10 +57,12 @@ function mapBridgeErrorToStatus(errorType, command) {
   }
 
   if (errorType === 'FileNotFoundError') {
-    return command === 'inspect' ? 404 : 422;
+    return ['inspect', 'start', 'stop', 'clone', 'snapshot-create', 'snapshot-restore', 'snapshot-delete'].includes(command)
+      ? 404
+      : 422;
   }
 
-  if (errorType === 'RuntimeError') {
+  if (errorType === 'RuntimeError' || errorType === 'VmLifecycleLockError') {
     return 409;
   }
 
@@ -71,15 +73,12 @@ function mapBridgeErrorToStatus(errorType, command) {
  * Run a Python bridge command and parse its JSON output.
  *
  * @param {string} command - Bridge command name.
- * @param {string} [value] - Optional command argument.
+ * @param {...string} values - Optional command arguments.
  * @returns {Promise<object>} Parsed bridge payload.
  */
-export function runBridgeCommand(command, value) {
+export function runBridgeCommand(command, ...values) {
   return new Promise((resolve, reject) => {
-    const args = [bridgePath, command];
-    if (value) {
-      args.push(value);
-    }
+    const args = [bridgePath, command, ...values.filter(Boolean)];
 
     const child = spawn(pythonBin, args, {
       cwd: provisionerRoot,
@@ -114,7 +113,11 @@ export function runBridgeCommand(command, value) {
 
       const errorType = payload?.error?.type || 'BridgeError';
       const message = payload?.error?.message || stderr.trim() || stdout.trim() || `Bridge command failed: ${command}`;
-      reject(createCommandError(message, mapBridgeErrorToStatus(errorType, command), payload));
+      reject(createCommandError(
+        message,
+        mapBridgeErrorToStatus(errorType, command),
+        payload?.error?.details || payload,
+      ));
     });
   });
 }
@@ -137,6 +140,69 @@ export async function createVm(configPath) {
  */
 export async function destroyVm(vmName) {
   return runBridgeCommand('destroy', vmName);
+}
+
+/**
+ * Start a VM by name.
+ *
+ * @param {string} vmName - VM name.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function startVm(vmName) {
+  return runBridgeCommand('start', vmName);
+}
+
+/**
+ * Stop a VM by name.
+ *
+ * @param {string} vmName - VM name.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function stopVm(vmName) {
+  return runBridgeCommand('stop', vmName);
+}
+
+/**
+ * Clone a VM disk into a new VM defined by a saved config path.
+ *
+ * @param {string} sourceVmName - Source VM name.
+ * @param {string} configPath - Saved target config path.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function cloneVm(sourceVmName, configPath) {
+  return runBridgeCommand('clone', sourceVmName, configPath);
+}
+
+/**
+ * Create a restore point for a VM.
+ *
+ * @param {string} vmName - VM name.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function createVmSnapshot(vmName) {
+  return runBridgeCommand('snapshot-create', vmName);
+}
+
+/**
+ * Restore a VM from a restore point.
+ *
+ * @param {string} vmName - VM name.
+ * @param {string} snapshotId - Snapshot identifier.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function restoreVmSnapshot(vmName, snapshotId) {
+  return runBridgeCommand('snapshot-restore', vmName, snapshotId);
+}
+
+/**
+ * Delete a restore point.
+ *
+ * @param {string} vmName - VM name.
+ * @param {string} snapshotId - Snapshot identifier.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function deleteVmSnapshot(vmName, snapshotId) {
+  return runBridgeCommand('snapshot-delete', vmName, snapshotId);
 }
 
 /**

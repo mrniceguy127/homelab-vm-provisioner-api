@@ -4,7 +4,20 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 
 import { configPathForVm, listStoredConfigNames, loadStoredConfig, saveVmConfig } from './config-store.js';
-import { createVm, destroyVm, inspectVm, listHostVmNames, readVmLog, streamVmLog } from './provisioner.js';
+import {
+  cloneVm,
+  createVm,
+  createVmSnapshot,
+  deleteVmSnapshot,
+  destroyVm,
+  inspectVm,
+  listHostVmNames,
+  readVmLog,
+  restoreVmSnapshot,
+  startVm,
+  stopVm,
+  streamVmLog,
+} from './provisioner.js';
 import { formatValidationError, isValidationError, parseCreateVmRequest } from './validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,11 +30,17 @@ const defaultDependencies = {
   listStoredConfigNames,
   loadStoredConfig,
   saveVmConfig,
+  cloneVm,
   createVm,
+  createVmSnapshot,
+  deleteVmSnapshot,
   destroyVm,
   inspectVm,
   listHostVmNames,
   readVmLog,
+  restoreVmSnapshot,
+  startVm,
+  stopVm,
   streamVmLog,
   parseCreateVmRequest,
   formatValidationError,
@@ -273,6 +292,85 @@ export function createApp(deps = defaultDependencies) {
       response.json({
         name: request.params.name,
         destroyed,
+      });
+    }),
+  );
+
+  app.post(
+    '/api/vms/:name/start',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const started = await deps.startVm(request.params.name);
+      response.json({
+        name: request.params.name,
+        started,
+      });
+    }),
+  );
+
+  app.post(
+    '/api/vms/:name/stop',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const stopped = await deps.stopVm(request.params.name);
+      response.json({
+        name: request.params.name,
+        stopped,
+      });
+    }),
+  );
+
+  app.post(
+    '/api/vms/:name/clone',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const payload = deps.parseCreateVmRequest(request.body);
+      await assertVmNameIsAvailable(deps, payload.config.vm.name);
+      const savedConfig = await deps.saveVmConfig(payload);
+      const cloned = await deps.cloneVm(request.params.name, savedConfig.configPath);
+
+      response.status(201).json({
+        sourceName: request.params.name,
+        ...savedConfig,
+        cloned,
+      });
+    }),
+  );
+
+  app.post(
+    '/api/vms/:name/snapshots',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const snapshot = await deps.createVmSnapshot(request.params.name);
+      response.status(201).json({
+        name: request.params.name,
+        snapshot,
+      });
+    }),
+  );
+
+  app.post(
+    '/api/vms/:name/snapshots/:snapshotId/restore',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const restored = await deps.restoreVmSnapshot(request.params.name, request.params.snapshotId);
+      response.json({
+        name: request.params.name,
+        snapshotId: request.params.snapshotId,
+        restored,
+      });
+    }),
+  );
+
+  app.delete(
+    '/api/vms/:name/snapshots/:snapshotId',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      const deleted = await deps.deleteVmSnapshot(request.params.name, request.params.snapshotId);
+      response.json({
+        name: request.params.name,
+        snapshotId: request.params.snapshotId,
+        deleted,
       });
     }),
   );

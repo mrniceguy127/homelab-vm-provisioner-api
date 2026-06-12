@@ -28,7 +28,10 @@ function buildDeps(overrides = {}) {
       rawConfig: 'vm: {}',
       config,
     }),
+    cloneVm: async (sourceVmName, configPath) => ({ success: true, source_name: sourceVmName, config_path: configPath }),
     createVm: async (configPath) => ({ success: true, config_path: configPath }),
+    createVmSnapshot: async (vmName) => ({ success: true, name: vmName }),
+    deleteVmSnapshot: async (vmName, snapshotId) => ({ success: true, name: vmName, snapshotId }),
     destroyVm: async (vmName) => ({ success: true, name: vmName }),
     inspectVm: async (vmName) => ({
       name: vmName,
@@ -36,9 +39,13 @@ function buildDeps(overrides = {}) {
       status: 'running',
       ip_address: '192.168.100.50',
       network: { mode: 'nat' },
+      snapshots: [],
     }),
     listHostVmNames: async () => [],
     readVmLog: async () => 'vm log line\n',
+    restoreVmSnapshot: async (vmName, snapshotId) => ({ success: true, name: vmName, snapshotId }),
+    startVm: async (vmName) => ({ success: true, name: vmName }),
+    stopVm: async (vmName) => ({ success: true, name: vmName }),
     streamVmLog: async (_vmName, response) => {
       response.status(200).end('streamed');
     },
@@ -156,6 +163,53 @@ test('GET /api/vms/:name/logs reads snapshot logs for configured VMs', async () 
 
   expect(response.status).toBe(200);
   expect(response.body.log).toBe('devbox:123');
+});
+
+test('POST /api/vms/:name/start delegates to the power-on dependency', async () => {
+  const started = [];
+  const app = createApp(buildDeps({
+    startVm: async (vmName) => {
+      started.push(vmName);
+      return { success: true, name: vmName };
+    },
+  }));
+
+  const response = await request(app).post('/api/vms/devbox/start');
+
+  expect(response.status).toBe(200);
+  expect(started).toEqual(['devbox']);
+});
+
+test('POST /api/vms/:name/clone saves the target config and delegates cloning', async () => {
+  const cloned = [];
+  const app = createApp(buildDeps({
+    cloneVm: async (sourceVmName, configPath) => {
+      cloned.push([sourceVmName, configPath]);
+      return { success: true, source_name: sourceVmName, config_path: configPath };
+    },
+  }));
+
+  const response = await request(app)
+    .post('/api/vms/devbox/clone')
+    .send(buildCreatePayload('clonebox'));
+
+  expect(response.status).toBe(201);
+  expect(cloned).toEqual([['devbox', '/configs/clonebox.yaml']]);
+});
+
+test('POST /api/vms/:name/snapshots creates a restore point', async () => {
+  const snapshots = [];
+  const app = createApp(buildDeps({
+    createVmSnapshot: async (vmName) => {
+      snapshots.push(vmName);
+      return { success: true, name: vmName };
+    },
+  }));
+
+  const response = await request(app).post('/api/vms/devbox/snapshots');
+
+  expect(response.status).toBe(201);
+  expect(snapshots).toEqual(['devbox']);
 });
 
 test('GET /api/vms/:name/logs/stream delegates to the streaming dependency', async () => {

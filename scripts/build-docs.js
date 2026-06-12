@@ -104,10 +104,11 @@ function buildLandingPage() {
         <h1>API Documentation</h1>
         <p>
           Generated reference documentation for the Express API, bridge integration,
-          storage helpers, privilege bootstrap, and runtime orchestration.
+          storage helpers, privilege bootstrap, and VM lifecycle orchestration.
         </p>
         <ul>
-          <li>Configuration-first VM inventory and detail routes</li>
+          <li>Configuration-first VM inventory, power, clone, and snapshot routes</li>
+          <li>Optional SSH key and post-cloud-init setup script persistence</li>
           <li>Host-wide libvirt name collision checks</li>
           <li>Privileged log access and sudo bootstrap behavior</li>
           <li>Static client bundle serving from the API</li>

@@ -26,7 +26,17 @@ if str(PROVISIONER_ROOT) not in sys.path:
 IMPORT_ERROR = None
 
 try:
-    from homelab_vm_provisioner.cli import create, destroy  # noqa: E402
+    from homelab_vm_provisioner.cli import (  # noqa: E402
+        clone,
+        create,
+        destroy,
+        list_snapshots,
+        snapshot_create,
+        snapshot_delete,
+        snapshot_restore,
+        start,
+        stop,
+    )
     from homelab_vm_provisioner.config import (  # noqa: E402
         default_vm_state_root,
         load_config,
@@ -190,6 +200,7 @@ def inspect_vm(vm_name):
         "state_exists": state_path.exists(),
         "log_path": str(log_path),
         "log_exists": log_path.exists(),
+        "snapshots": list_snapshots(vm_name),
     }
 
 
@@ -221,6 +232,49 @@ def handle_destroy(vm_name):
 
     output = capture_action(destroy, vm_name)
     emit({"success": True, "output": output, "name": vm_name})
+
+
+def handle_start(vm_name):
+    """Start a VM and emit a JSON response."""
+    output = capture_action(start, vm_name)
+    emit({"success": True, "output": output, "name": vm_name})
+
+
+def handle_stop(vm_name):
+    """Stop a VM and emit a JSON response."""
+    output = capture_action(stop, vm_name)
+    emit({"success": True, "output": output, "name": vm_name})
+
+
+def handle_clone(source_vm_name, config_path):
+    """Clone a VM disk into a new VM and emit a JSON response."""
+    output = capture_action(clone, source_vm_name, config_path)
+    emit(
+        {
+            "success": True,
+            "output": output,
+            "source_name": source_vm_name,
+            "config_path": config_path,
+        }
+    )
+
+
+def handle_snapshot_create(vm_name):
+    """Create a restore point and emit a JSON response."""
+    output = capture_action(snapshot_create, vm_name)
+    emit({"success": True, "output": output, "name": vm_name, "snapshots": list_snapshots(vm_name)})
+
+
+def handle_snapshot_restore(vm_name, snapshot_id):
+    """Restore a VM from a restore point and emit a JSON response."""
+    output = capture_action(snapshot_restore, vm_name, snapshot_id)
+    emit({"success": True, "output": output, "name": vm_name, "snapshot_id": snapshot_id})
+
+
+def handle_snapshot_delete(vm_name, snapshot_id):
+    """Delete a restore point and emit a JSON response."""
+    output = capture_action(snapshot_delete, vm_name, snapshot_id)
+    emit({"success": True, "output": output, "name": vm_name, "snapshot_id": snapshot_id})
 
 
 def handle_list():
@@ -263,13 +317,27 @@ def build_parser():
     """Build the bridge CLI argument parser.
 
     Returns:
-        argparse.ArgumentParser: Parser for ``create``, ``destroy``,
-        ``inspect``, ``list``, and ``host-list`` bridge commands.
+        argparse.ArgumentParser: Parser for bridge lifecycle commands.
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("create", "destroy", "inspect", "list", "host-list"))
-    parser.add_argument("value", nargs="?")
+    parser.add_argument(
+        "command",
+        choices=(
+            "create",
+            "destroy",
+            "start",
+            "stop",
+            "clone",
+            "snapshot-create",
+            "snapshot-restore",
+            "snapshot-delete",
+            "inspect",
+            "list",
+            "host-list",
+        ),
+    )
+    parser.add_argument("values", nargs="*")
     return parser
 
 
@@ -288,24 +356,55 @@ def main():
             raise IMPORT_ERROR
 
         if args.command == "create":
-            if not args.value:
+            if len(args.values) != 1:
                 raise ValueError("create requires a config path")
-            handle_create(args.value)
+            handle_create(args.values[0])
 
-        if args.command == "destroy":
-            if not args.value:
+        elif args.command == "destroy":
+            if len(args.values) != 1:
                 raise ValueError("destroy requires a VM name")
-            handle_destroy(args.value)
+            handle_destroy(args.values[0])
 
-        if args.command == "inspect":
-            if not args.value:
+        elif args.command == "start":
+            if len(args.values) != 1:
+                raise ValueError("start requires a VM name")
+            handle_start(args.values[0])
+
+        elif args.command == "stop":
+            if len(args.values) != 1:
+                raise ValueError("stop requires a VM name")
+            handle_stop(args.values[0])
+
+        elif args.command == "clone":
+            if len(args.values) != 2:
+                raise ValueError("clone requires a source VM name and target config path")
+            handle_clone(args.values[0], args.values[1])
+
+        elif args.command == "snapshot-create":
+            if len(args.values) != 1:
+                raise ValueError("snapshot-create requires a VM name")
+            handle_snapshot_create(args.values[0])
+
+        elif args.command == "snapshot-restore":
+            if len(args.values) != 2:
+                raise ValueError("snapshot-restore requires a VM name and snapshot ID")
+            handle_snapshot_restore(args.values[0], args.values[1])
+
+        elif args.command == "snapshot-delete":
+            if len(args.values) != 2:
+                raise ValueError("snapshot-delete requires a VM name and snapshot ID")
+            handle_snapshot_delete(args.values[0], args.values[1])
+
+        elif args.command == "inspect":
+            if len(args.values) != 1:
                 raise ValueError("inspect requires a VM name")
-            handle_inspect(args.value)
+            handle_inspect(args.values[0])
 
-        if args.command == "host-list":
+        elif args.command == "host-list":
             handle_host_list()
 
-        handle_list()
+        else:
+            handle_list()
     except Exception as exc:  # pragma: no cover - bridge error path
         emit(
             {
@@ -313,6 +412,7 @@ def main():
                 "error": {
                     "type": type(exc).__name__,
                     "message": str(exc),
+                    "details": getattr(exc, "details", None),
                 },
             },
             exit_code=1,

@@ -26,10 +26,12 @@ test('accepts a valid VM create request', () => {
       ],
     },
     sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey user@example',
+    setupScript: '#!/bin/sh\necho ready',
   });
 
   expect(payload.config.vm.name).toBe('devbox');
   expect(payload.sshPublicKey.startsWith('ssh-ed25519 ')).toBe(true);
+  expect(payload.setupScript).toContain('echo ready');
 });
 
 test('rejects VM names longer than 12 characters', () => {

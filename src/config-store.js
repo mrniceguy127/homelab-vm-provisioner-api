@@ -16,6 +16,7 @@ export const legacyVmDataRoot = path.join(legacyRuntimeRoot, 'vm-data');
 export const configRoot = path.join(provisionerRoot, 'configs');
 export const userKeyRoot = path.join(provisionerRoot, 'vm', 'keys', 'users');
 export const vmDataRoot = path.join(provisionerRoot, 'vm', 'data');
+export const scriptRoot = path.join(provisionerRoot, 'vm', 'scripts');
 
 /**
  * Create an HTTP 422 validation error.
@@ -127,18 +128,19 @@ export async function ensureRuntimeDirectories() {
     fs.mkdir(configRoot, { recursive: true }),
     fs.mkdir(userKeyRoot, { recursive: true }),
     fs.mkdir(vmDataRoot, { recursive: true }),
+    fs.mkdir(scriptRoot, { recursive: true }),
   ]);
 }
 
 /**
  * Save a VM config using the provisioner's default storage paths.
  *
- * @param {{config: object, sshPublicKey?: string}} payload - Save request payload.
+ * @param {{config: object, sshPublicKey?: string, setupScript?: string}} payload - Save request payload.
  * @param {object} [options={}] - Save options.
  * @param {boolean} [options.overwrite=false] - Whether to allow overwriting an existing config.
  * @returns {Promise<object>} Saved config metadata.
  */
-export async function saveVmConfig({ config, sshPublicKey }, options = {}) {
+export async function saveVmConfig({ config, sshPublicKey, setupScript }, options = {}) {
   const { overwrite = false } = options;
   const effectiveConfig = cloneConfig(config);
   const vmName = effectiveConfig.vm.name;
@@ -152,6 +154,10 @@ export async function saveVmConfig({ config, sshPublicKey }, options = {}) {
 
   if (effectiveConfig.paths && Object.keys(effectiveConfig.paths).length === 0) {
     delete effectiveConfig.paths;
+  }
+
+  if (effectiveConfig.scripts && Object.keys(effectiveConfig.scripts).length === 0) {
+    delete effectiveConfig.scripts;
   }
 
   let keyPath = null;
@@ -177,12 +183,39 @@ export async function saveVmConfig({ config, sshPublicKey }, options = {}) {
     }
   }
 
+  let scriptPath = null;
+  if (setupScript) {
+    const requestedScriptFile = effectiveConfig.scripts?.setup_script_file || `${vmName}-setup.sh`;
+    const scriptFileName = sanitizeFileName(requestedScriptFile, `${vmName}-setup.sh`);
+    scriptPath = path.join(scriptRoot, scriptFileName);
+    await fs.writeFile(scriptPath, `${setupScript.trim()}\n`, 'utf8');
+    effectiveConfig.scripts = {
+      ...(effectiveConfig.scripts || {}),
+      setup_script_file: scriptPath,
+    };
+  } else if (effectiveConfig.scripts?.setup_script_file) {
+    if (!path.isAbsolute(effectiveConfig.scripts.setup_script_file)) {
+      throw createValidationError(
+        'config.scripts.setup_script_file must be an absolute path when setupScript is not provided',
+      );
+    }
+
+    try {
+      await fs.access(effectiveConfig.scripts.setup_script_file);
+    } catch {
+      throw createValidationError(
+        `Referenced setup script was not found: ${effectiveConfig.scripts.setup_script_file}`,
+      );
+    }
+  }
+
   const rawConfig = yaml.dump(effectiveConfig, { lineWidth: -1 });
   await fs.writeFile(configPath, rawConfig, 'utf8');
 
   return {
     vmName,
     keyPath,
+    scriptPath,
     configPath,
     rawConfig,
     config: effectiveConfig,

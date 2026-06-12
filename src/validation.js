@@ -85,6 +85,12 @@ const networkSchema = z
 const configSchema = z
   .object({
     vm: vmSchema,
+    scripts: z
+      .object({
+        setup_script_file: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     paths: z
       .object({
         vm_data_dir: z.string().trim().min(1).optional(),
@@ -125,6 +131,7 @@ const createVmRequestSchema = z
   .object({
     config: configSchema,
     sshPublicKey: z.string().trim().min(1).optional(),
+    setupScript: z.string().trim().min(1).optional(),
   })
   .strict();
 
