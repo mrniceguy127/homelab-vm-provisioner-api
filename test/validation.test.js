@@ -11,6 +11,7 @@ test('accepts a valid VM create request', () => {
         ram_mb: 4096,
         vcpus: 2,
         disk_gb: 40,
+        allow_host_access: false,
         trust: 'trusted',
       },
       network: {
@@ -34,19 +35,19 @@ test('accepts a valid VM create request', () => {
   expect(payload.setupScript).toContain('echo ready');
 });
 
-test('rejects VM names longer than 12 characters', () => {
+test('rejects VM names longer than 63 characters', () => {
   expect(() =>
       parseCreateVmRequest({
         config: {
           vm: {
-            name: 'name-too-long',
+            name: 'a'.repeat(64),
             user: 'matt',
             ram_mb: 4096,
             vcpus: 2,
             disk_gb: 40,
           },
         },
-      })).toThrow(/12 characters or fewer/);
+      })).toThrow(/63 characters or fewer/);
 });
 
 test('requires explicit nat-custom network details when subnet_prefix is omitted', () => {

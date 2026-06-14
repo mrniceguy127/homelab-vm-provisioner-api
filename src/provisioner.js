@@ -6,6 +6,27 @@ import { apiRoot, getVmLogPath, provisionerRoot } from './config-store.js';
 const bridgePath = path.join(apiRoot, 'bridge', 'hlvmp_bridge.py');
 const pythonBin = process.env.HLVMP_PYTHON_BIN || 'python3';
 
+function normalizedCommandPath(pathValue = '') {
+  const standardEntries = [
+    '/usr/local/sbin',
+    '/usr/local/bin',
+    '/usr/sbin',
+    '/usr/bin',
+    '/sbin',
+    '/bin',
+  ];
+  const entries = String(pathValue || '')
+    .split(':')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const entry of standardEntries) {
+    if (!entries.includes(entry)) {
+      entries.push(entry);
+    }
+  }
+  return entries.join(':');
+}
+
 /**
  * Create an Error object with an attached HTTP status code.
  *
@@ -62,7 +83,11 @@ function mapBridgeErrorToStatus(errorType, command) {
       : 422;
   }
 
-  if (errorType === 'RuntimeError' || errorType === 'VmLifecycleLockError') {
+  if (
+    errorType === 'RuntimeError'
+    || errorType === 'VmLifecycleLockError'
+    || errorType === 'NetworkReconcileSafetyError'
+  ) {
     return 409;
   }
 
@@ -84,6 +109,7 @@ export function runBridgeCommand(command, ...values) {
       cwd: provisionerRoot,
       env: {
         ...process.env,
+        PATH: normalizedCommandPath(process.env.PATH),
         PYTHONUNBUFFERED: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -203,6 +229,32 @@ export async function restoreVmSnapshot(vmName, snapshotId) {
  */
 export async function deleteVmSnapshot(vmName, snapshotId) {
   return runBridgeCommand('snapshot-delete', vmName, snapshotId);
+}
+
+/**
+ * Reconcile managed libvirt/network policy state.
+ *
+ * @param {{policyOnly?: boolean, allowDestructive?: boolean}} [options={}] - Reconcile options.
+ * @returns {Promise<object>} Bridge response payload.
+ */
+export async function reconcileVmNetworking(options = {}) {
+  const {
+    policyOnly = false,
+    allowDestructive = false,
+  } = options;
+  const args = [];
+  if (policyOnly) {
+    args.push('--policy-only');
+  }
+  if (allowDestructive) {
+    args.push('--allow-destructive');
+  }
+
+  const payload = await runBridgeCommand('reconcile', ...args);
+  if (payload?.output) {
+    console.info(payload.output);
+  }
+  return payload;
 }
 
 /**

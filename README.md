@@ -11,6 +11,7 @@ When this repository is checked out as part of the full `homelab-vm-provisioner-
 - `src/app.js`: Express routes and HTTP error handling.
 - `src/validation.js`: Request schema validation with `zod`.
 - `src/config-store.js`: Stores API-managed YAML configs and SSH public keys.
+- `src/network-model.js`: Persists tenant/network-group metadata, allocates `/28` subnets, and enriches saved VM configs with stable owner/network identity.
 - `src/provisioner.js`: Spawns the Python bridge and handles log reads/streams.
 - `bridge/hlvmp_bridge.py`: JSON bridge into the nested `homelab-vm-provisioner` repo.
 - `homelab-vm-provisioner/`: Git submodule containing the real Python VM provisioner.
@@ -87,6 +88,8 @@ Default port: `3000`
 | `PORT` | `3000` | Express listen port |
 | `HLVMP_PROVISIONER_DIR` | `./homelab-vm-provisioner` | Path to the nested Python provisioner checkout |
 | `HLVMP_API_RUNTIME_DIR` | `./runtime` | Legacy migration source for older API-managed config, key, and VM data files |
+| `HLVMP_NETWORK_POOL_CIDR` | `10.80.0.0/16` | Global private pool used for managed network-group subnet allocation |
+| `HLVMP_NETWORK_GROUP_PREFIX_LENGTH` | `28` | Prefix length assigned to each new network group |
 | `HLVMP_PYTHON_BIN` | `python3` | Python executable used for the bridge process |
 
 ## Provisioner Paths
@@ -94,6 +97,8 @@ Default port: `3000`
 The API now uses the nested Python provisioner's default directories instead of the old API-local `runtime/` folder:
 
 - `homelab-vm-provisioner/configs/<vm>.yaml`: Saved YAML config per VM
+- `homelab-vm-provisioner/vm/metadata/users.json`: Persisted tenant/user records
+- `homelab-vm-provisioner/vm/metadata/network-groups.json`: Persisted network-group records and subnet allocations
 - `homelab-vm-provisioner/vm/keys/users/<file>.pub`: Uploaded tenant SSH public keys
 - `homelab-vm-provisioner/vm/scripts/<file>.sh`: Uploaded post-cloud-init setup scripts
 - `homelab-vm-provisioner/vm/data/<vm>/`: Default per-VM rendered data directory
@@ -108,6 +113,22 @@ If `setupScript` is present in a create request, the API writes the script to `h
 If `setupScript` is omitted but `config.scripts.setup_script_file` is present, that path must already be absolute and readable on disk.
 
 Legacy files under `runtime/` are migrated into these provisioner-default directories during API startup.
+
+## Tenant Networking Model
+
+Networking is now tenant and network-group based instead of one flat VM network.
+
+- one `users.json` record per tenant/user
+- one `network-groups.json` record per tenant-owned libvirt network group
+- one libvirt network per network group
+- one `/28` subnet per network group by default, allocated from `HLVMP_NETWORK_POOL_CIDR`
+- one stable MAC/IP reservation per VM inside its assigned network group
+- same-group traffic allowed by default and overrideable per VM
+- hypervisor host access allowed by default and overrideable per VM
+- private LAN access denied by default and enabled only per VM for admin-owned VMs
+- port forwarding modeled per VM and reconciled against the VM's assigned managed IP
+
+The managed networking reconciler now renders VM policy into application-owned nftables tables. See `docs/vm-networking-nftables.md` for the table schema, reconcile flow, rollback, and verification checklist.
 
 ## Developer Commands
 
@@ -136,22 +157,27 @@ The main write endpoints accept this shape:
     "vm": {
       "name": "devbox",
       "user": "matt",
+      "owner_user_id": "user-admin",
+      "network_group_id": "ng-admin",
       "ram_mb": 4096,
       "vcpus": 2,
       "disk_gb": 40,
       "allow_sudo": true,
+      "allow_same_group_traffic": true,
+      "allow_host_access": true,
+      "allow_private_lan_access": false,
+      "internet_access": true,
       "trust": "trusted",
       "template": "base"
-    },
-    "network": {
-      "mode": "nat-auto"
     },
     "packages": ["git", "tmux"],
     "ports": [
       {
         "host": 2222,
         "guest": 22,
-        "proto": "tcp"
+        "proto": "tcp",
+        "description": "SSH",
+        "enabled": true
       }
     ]
   },
@@ -162,24 +188,23 @@ The main write endpoints accept this shape:
 
 ### Validation Rules
 
-- `config.vm.name`: required, max 12 chars
+- `config.vm.name`: required, max 63 chars
 - `config.vm.name`: must also be unique across saved configs and all libvirt VM names already present on the host
 - `config.vm.user`: required
+- `config.vm.owner_user_id`: optional in requests, auto-filled to the default admin tenant when omitted
+- `config.vm.network_group_id`: optional in requests, auto-filled to the default owner group when omitted
 - `config.vm.ssh_key_file`: must be absolute and readable when `sshPublicKey` is not provided
 - `config.vm.ram_mb`, `vcpus`, `disk_gb`: required positive integers
 - `config.vm.trust`: `trusted` or `untrusted`
-- `config.network.mode`: `nat-auto`, `nat-custom`, or `bridge`
-- `config.network.subnet_prefix`: IPv4 prefix like `192.168.240`
-- `config.network.cidr`: IPv4 `/24` CIDR
-- `config.network.gateway`, `vm_ip`, `dhcp_start`, `dhcp_end`: valid IP addresses
-- `config.network.mac`: valid MAC address if provided
+- `config.vm.allow_same_group_traffic`, `allow_host_access`, `allow_private_lan_access`, `internet_access`: optional booleans controlling per-VM network policy
+- `config.network.*`: managed by the API and reconciler; create requests only need the `vm.network_group_id` reference
 - `config.ports[*].host` and `guest`: integers in `1..65535`
 - `config.ports[*].proto`: `tcp` or `udp`
+- `config.ports[*].enabled`: optional boolean
+- `config.ports[*].description`: optional text label
 - `config.dns.resolvers[*]`: valid IP addresses
 - `config.scripts.setup_script_file`: must be absolute and readable when `setupScript` is not provided
 - `setupScript`: optional non-empty string
-- For `nat-custom`, either `subnet_prefix` must be present or all of `cidr`, `gateway`, `vm_ip`, `dhcp_start`, and `dhcp_end` must be present
-- For `bridge`, `subnet_prefix` is rejected
 
 ## API Endpoints
 
@@ -195,6 +220,43 @@ Response:
 }
 ```
 
+### `GET /api/users`
+
+Returns persisted tenant/user records. The current migration creates one default admin user when none exists yet.
+
+### `GET /api/network-groups`
+
+Returns persisted network-group records, including allocated subnet and profile metadata.
+
+### `POST /api/network-groups`
+
+Creates a new tenant-owned network group. New groups allocate the first free `/28` from `HLVMP_NETWORK_POOL_CIDR` unless a specific imported subnet is supplied during migration.
+
+Request body:
+
+```json
+{
+  "ownerUserId": "user-admin",
+  "name": "default-admin",
+  "profile": "isolated_nat"
+}
+```
+
+### `PATCH /api/vms/:name/policy`
+
+Updates one or more saved per-VM network policy flags, then runs the managed networking reconciler.
+
+Request body:
+
+```json
+{
+  "allow_same_group_traffic": false,
+  "allow_host_access": false,
+  "allow_private_lan_access": true,
+  "internet_access": true
+}
+```
+
 ### `POST /api/vms/configs`
 
 Validates and saves a VM config without provisioning the VM.
@@ -207,12 +269,14 @@ Request body:
     "vm": {
       "name": "devbox",
       "user": "matt",
+      "owner_user_id": "user-admin",
+      "network_group_id": "ng-admin",
       "ram_mb": 4096,
       "vcpus": 2,
-      "disk_gb": 40
-    },
-    "network": {
-      "mode": "nat-auto"
+      "disk_gb": 40,
+      "allow_same_group_traffic": true,
+      "allow_private_lan_access": false,
+      "internet_access": true
     }
   },
   "sshPublicKey": "ssh-ed25519 AAAAC3... user@example"
@@ -231,16 +295,23 @@ Response `201`:
     "vm": {
       "name": "devbox",
       "user": "matt",
+      "owner_user_id": "user-admin",
+      "network_group_id": "ng-admin",
       "ssh_key_file": "/abs/path/homelab-vm-provisioner/vm/keys/users/devbox.pub",
       "ram_mb": 4096,
       "vcpus": 2,
-      "disk_gb": 40
+      "disk_gb": 40,
+      "ip_address": "10.80.0.2",
+      "mac_address": "52:54:00:11:22:33"
     },
     "paths": {
       "vm_data_dir": "/abs/path/homelab-vm-provisioner/vm/data/devbox"
     },
     "network": {
-      "mode": "nat-auto"
+      "profile": "isolated_nat",
+      "network_group_id": "ng-admin",
+      "subnet_cidr": "10.80.0.0/28",
+      "vm_ip": "10.80.0.2"
     }
   }
 }
@@ -503,7 +574,9 @@ Response `200`:
 
 ### `POST /api/vms/:name/clone`
 
-Creates a new saved config and clones the source VM into that new target definition.
+Creates a new saved config and performs a full VM clone from the source VM into that new target definition.
+
+This route requires the source VM to exist with a cloneable source disk.
 
 Request body: same as `POST /api/vms/configs`
 
@@ -639,7 +712,7 @@ Response `400`:
   "details": [
     {
       "path": "config.vm.name",
-      "message": "VM names must be 12 characters or fewer"
+      "message": "VM names must be 63 characters or fewer"
     }
   ]
 }

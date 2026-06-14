@@ -223,6 +223,30 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
 }
 
 /**
+ * Delete files created while saving a VM config.
+ *
+ * This is used to roll back `POST /api/vms` when provisioning fails after the
+ * config and any uploaded assets were already persisted.
+ *
+ * @param {{configPath?: string, keyPath?: string|null, scriptPath?: string|null}} savedConfig - Save result metadata.
+ * @returns {Promise<void>} Resolves after all created files are removed.
+ */
+export async function deleteSavedConfigArtifacts(savedConfig) {
+  const paths = [savedConfig?.configPath, savedConfig?.keyPath, savedConfig?.scriptPath]
+    .filter(Boolean);
+
+  await Promise.all(paths.map(async (filePath) => {
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }));
+}
+
+/**
  * Load one saved VM config.
  *
  * @param {string} vmName - VM name.

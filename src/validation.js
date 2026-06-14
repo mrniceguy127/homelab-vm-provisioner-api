@@ -20,6 +20,12 @@ function isIpv4Slash24(value) {
   return prefixLength === '24' && isIpv4Address(address);
 }
 
+function isIpv4Cidr(value) {
+  const [address, prefixLengthText] = value.split('/');
+  const prefixLength = Number.parseInt(prefixLengthText, 10);
+  return isIpv4Address(address) && !Number.isNaN(prefixLength) && prefixLength >= 0 && prefixLength <= 32;
+}
+
 const ipAddressSchema = z.string().trim().refine(isIpAddress, 'Must be a valid IP address');
 
 const portSchema = z
@@ -30,13 +36,21 @@ const portSchema = z
 
 const vmSchema = z
   .object({
-    name: z.string().trim().min(1).max(12, 'VM names must be 12 characters or fewer'),
+    name: z.string().trim().min(1).max(63, 'VM names must be 63 characters or fewer'),
     user: z.string().trim().min(1),
+    owner_user_id: z.string().trim().min(1).optional(),
+    network_group_id: z.string().trim().min(1).optional(),
     ssh_key_file: z.string().trim().min(1).optional(),
     ram_mb: z.number().int().positive(),
     vcpus: z.number().int().positive(),
     disk_gb: z.number().int().positive(),
     allow_sudo: z.boolean().optional(),
+    allow_same_group_traffic: z.boolean().optional(),
+    allow_host_access: z.boolean().optional(),
+    allow_private_lan_access: z.boolean().optional(),
+    internet_access: z.boolean().optional(),
+    mac_address: z.string().trim().regex(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i, 'Must be a valid MAC address').optional(),
+    ip_address: ipAddressSchema.optional(),
     trust: z.enum(['trusted', 'untrusted']).optional(),
     template: z.string().trim().min(1).optional(),
   })
@@ -44,15 +58,21 @@ const vmSchema = z
 
 const networkSchema = z
   .object({
-    mode: z.enum(['nat-auto', 'nat-custom', 'bridge']).optional(),
+    mode: z.enum(['nat-auto', 'nat-custom', 'bridge', 'private', 'nat', 'isolated_nat', 'bridged']).optional(),
+    profile: z.enum(['private', 'nat', 'isolated_nat', 'bridged']).optional(),
+    network_group_id: z.string().trim().min(1).optional(),
+    group_name: z.string().trim().min(1).optional(),
+    owner_user_id: z.string().trim().min(1).optional(),
+    libvirt_network_name: z.string().trim().min(1).optional(),
     subnet_prefix: z.string().trim().refine(isIpv4Prefix, 'Must look like 192.168.240').optional(),
-    cidr: z.string().trim().refine(isIpv4Slash24, 'Must be a valid IPv4 /24 CIDR').optional(),
+    subnet_cidr: z.string().trim().refine(isIpv4Cidr, 'Must be a valid IPv4 CIDR').optional(),
+    cidr: z.string().trim().refine(isIpv4Cidr, 'Must be a valid IPv4 CIDR').optional(),
     gateway: ipAddressSchema.optional(),
+    gateway_ip: ipAddressSchema.optional(),
     vm_ip: ipAddressSchema.optional(),
     dhcp_start: ipAddressSchema.optional(),
     dhcp_end: ipAddressSchema.optional(),
     name: z.string().trim().min(1).optional(),
-    zone: z.string().trim().min(1).optional(),
     bridge_name: z.string().trim().min(1).optional(),
     mac: z.string().trim().regex(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i, 'Must be a valid MAC address').optional(),
   })
@@ -117,9 +137,18 @@ const configSchema = z
       .array(
         z
           .object({
+            id: z.string().trim().min(1).optional(),
+            owner_user_id: z.string().trim().min(1).optional(),
+            vm_id: z.string().trim().min(1).optional(),
             host: portSchema,
             guest: portSchema,
+            external_port: portSchema.optional(),
+            internal_port: portSchema.optional(),
+            internal_ip: ipAddressSchema.optional(),
             proto: z.enum(['tcp', 'udp']).optional(),
+            protocol: z.enum(['tcp', 'udp']).optional(),
+            description: z.string().trim().optional(),
+            enabled: z.boolean().optional(),
           })
           .strict(),
       )
@@ -135,8 +164,35 @@ const createVmRequestSchema = z
   })
   .strict();
 
+const networkGroupRequestSchema = z
+  .object({
+    ownerUserId: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    profile: z.enum(['private', 'nat', 'isolated_nat', 'bridged']).optional(),
+    bridgeName: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const vmPolicyRequestSchema = z
+  .object({
+    allow_same_group_traffic: z.boolean().optional(),
+    allow_host_access: z.boolean().optional(),
+    allow_private_lan_access: z.boolean().optional(),
+    internet_access: z.boolean().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one policy field is required');
+
 export function parseCreateVmRequest(payload) {
   return createVmRequestSchema.parse(payload);
+}
+
+export function parseNetworkGroupRequest(payload) {
+  return networkGroupRequestSchema.parse(payload);
+}
+
+export function parseVmPolicyRequest(payload) {
+  return vmPolicyRequestSchema.parse(payload);
 }
 
 export function formatValidationError(error) {

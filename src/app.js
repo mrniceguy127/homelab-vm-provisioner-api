@@ -3,7 +3,19 @@ import { fileURLToPath } from 'node:url';
 
 import express from 'express';
 
-import { configPathForVm, listStoredConfigNames, loadStoredConfig, saveVmConfig } from './config-store.js';
+import {
+  configPathForVm,
+  deleteSavedConfigArtifacts,
+  listStoredConfigNames,
+  loadStoredConfig,
+  saveVmConfig,
+} from './config-store.js';
+import {
+  createNetworkGroup,
+  listNetworkGroups,
+  listUsers,
+  prepareVmConfigForSave,
+} from './network-model.js';
 import {
   cloneVm,
   createVm,
@@ -13,12 +25,19 @@ import {
   inspectVm,
   listHostVmNames,
   readVmLog,
+  reconcileVmNetworking,
   restoreVmSnapshot,
   startVm,
   stopVm,
   streamVmLog,
 } from './provisioner.js';
-import { formatValidationError, isValidationError, parseCreateVmRequest } from './validation.js';
+import {
+  formatValidationError,
+  isValidationError,
+  parseCreateVmRequest,
+  parseNetworkGroupRequest,
+  parseVmPolicyRequest,
+} from './validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,8 +46,13 @@ const staticIndexPath = path.join(staticRoot, 'index.html');
 
 const defaultDependencies = {
   configPathForVm,
+  deleteSavedConfigArtifacts,
+  createNetworkGroup,
   listStoredConfigNames,
+  listNetworkGroups,
+  listUsers,
   loadStoredConfig,
+  prepareVmConfigForSave,
   saveVmConfig,
   cloneVm,
   createVm,
@@ -38,11 +62,14 @@ const defaultDependencies = {
   inspectVm,
   listHostVmNames,
   readVmLog,
+  reconcileVmNetworking,
   restoreVmSnapshot,
   startVm,
   stopVm,
   streamVmLog,
   parseCreateVmRequest,
+  parseNetworkGroupRequest,
+  parseVmPolicyRequest,
   formatValidationError,
   isValidationError,
 };
@@ -105,20 +132,49 @@ export async function assertVmNameIsAvailable(deps, vmName) {
  * @returns {Promise<object>} VM details merged with configuration metadata.
  */
 export async function inspectConfiguredVm(deps, vmName) {
+  const storedConfig = await deps.loadStoredConfig(vmName);
+  const storedVm = storedConfig.config?.vm || {};
+  const storedNetwork = storedConfig.config?.network || {};
+
   try {
     const vm = await deps.inspectVm(vmName);
     return {
       ...vm,
+      owner_user_id: vm.owner_user_id || storedVm.owner_user_id || null,
+      network_group_id: vm.network_group_id || storedVm.network_group_id || null,
+      allow_same_group_traffic: vm.allow_same_group_traffic ?? storedVm.allow_same_group_traffic ?? true,
+      allow_host_access: vm.allow_host_access ?? storedVm.allow_host_access ?? true,
+      allow_private_lan_access: vm.allow_private_lan_access ?? storedVm.allow_private_lan_access ?? false,
+      internet_access: vm.internet_access ?? storedVm.internet_access ?? true,
+      mac_address: vm.mac_address || storedVm.mac_address || storedNetwork.mac || null,
+      ip_address: vm.ip_address || storedVm.ip_address || storedNetwork.vm_ip || vm.ip_address || null,
+      network: {
+        ...storedNetwork,
+        ...(vm.network || {}),
+      },
+      ports: vm.ports?.length ? vm.ports : (storedConfig.config?.ports || []),
       configured: true,
-      storedConfigPath: deps.configPathForVm(vmName),
+      storedConfigPath: storedConfig.configPath,
+      storedConfig: storedConfig.config,
     };
   } catch (error) {
     return {
       name: vmName,
       exists: false,
       status: 'unknown',
+        owner_user_id: storedVm.owner_user_id || null,
+        network_group_id: storedVm.network_group_id || null,
+        allow_same_group_traffic: storedVm.allow_same_group_traffic ?? true,
+        allow_host_access: storedVm.allow_host_access ?? true,
+        allow_private_lan_access: storedVm.allow_private_lan_access ?? false,
+        internet_access: storedVm.internet_access ?? true,
+      mac_address: storedVm.mac_address || storedNetwork.mac || null,
+      ip_address: storedVm.ip_address || storedNetwork.vm_ip || null,
+      network: Object.keys(storedNetwork).length > 0 ? storedNetwork : null,
+      ports: storedConfig.config?.ports || [],
       configured: true,
-      storedConfigPath: deps.configPathForVm(vmName),
+      storedConfigPath: storedConfig.configPath,
+      storedConfig: storedConfig.config,
       provisionerError: error?.message || 'Unable to query provisioner state',
     };
   }
@@ -186,10 +242,33 @@ export function createApp(deps = defaultDependencies) {
     response.json({ ok: true });
   });
 
+  app.get(
+    '/api/users',
+    asyncRoute(async (_request, response) => {
+      response.json({ users: await deps.listUsers() });
+    }),
+  );
+
+  app.get(
+    '/api/network-groups',
+    asyncRoute(async (_request, response) => {
+      response.json({ networkGroups: await deps.listNetworkGroups() });
+    }),
+  );
+
+  app.post(
+    '/api/network-groups',
+    asyncRoute(async (request, response) => {
+      const payload = deps.parseNetworkGroupRequest(request.body);
+      const networkGroup = await deps.createNetworkGroup(payload);
+      response.status(201).json({ networkGroup });
+    }),
+  );
+
   app.post(
     '/api/vms/configs',
     asyncRoute(async (request, response) => {
-      const payload = deps.parseCreateVmRequest(request.body);
+      const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload);
 
@@ -200,10 +279,20 @@ export function createApp(deps = defaultDependencies) {
   app.post(
     '/api/vms',
     asyncRoute(async (request, response) => {
-      const payload = deps.parseCreateVmRequest(request.body);
+      const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload);
-      const provisioned = await deps.createVm(savedConfig.configPath);
+      let provisioned;
+      try {
+        provisioned = await deps.createVm(savedConfig.configPath);
+      } catch (error) {
+        try {
+          await deps.deleteSavedConfigArtifacts(savedConfig);
+        } catch (cleanupError) {
+          console.error(cleanupError.message || cleanupError);
+        }
+        throw error;
+      }
 
       response.status(201).json({
         ...savedConfig,
@@ -267,6 +356,18 @@ export function createApp(deps = defaultDependencies) {
       response.json({
         vm: {
           ...vmResult,
+           owner_user_id: vmResult.owner_user_id || storedConfig.config?.vm?.owner_user_id || null,
+           network_group_id: vmResult.network_group_id || storedConfig.config?.vm?.network_group_id || null,
+           allow_same_group_traffic: vmResult.allow_same_group_traffic ?? storedConfig.config?.vm?.allow_same_group_traffic ?? true,
+           allow_host_access: vmResult.allow_host_access ?? storedConfig.config?.vm?.allow_host_access ?? true,
+           allow_private_lan_access: vmResult.allow_private_lan_access ?? storedConfig.config?.vm?.allow_private_lan_access ?? false,
+           internet_access: vmResult.internet_access ?? storedConfig.config?.vm?.internet_access ?? true,
+          mac_address: vmResult.mac_address || storedConfig.config?.vm?.mac_address || storedConfig.config?.network?.mac || null,
+          ip_address: vmResult.ip_address || storedConfig.config?.vm?.ip_address || storedConfig.config?.network?.vm_ip || null,
+          network: vmResult.network
+            ? { ...(storedConfig.config?.network || {}), ...vmResult.network }
+            : (storedConfig.config?.network || null),
+          ports: vmResult.ports?.length ? vmResult.ports : (storedConfig.config?.ports || []),
           configured: true,
           storedConfigPath: storedConfig.configPath,
           storedConfig: storedConfig.config,
@@ -324,7 +425,7 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/clone',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const payload = deps.parseCreateVmRequest(request.body);
+      const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload);
       const cloned = await deps.cloneVm(request.params.name, savedConfig.configPath);
@@ -333,6 +434,31 @@ export function createApp(deps = defaultDependencies) {
         sourceName: request.params.name,
         ...savedConfig,
         cloned,
+      });
+    }),
+  );
+
+  app.patch(
+    '/api/vms/:name/policy',
+    asyncRoute(async (request, response) => {
+      const storedConfig = await requireStoredConfig(deps, request.params.name);
+      const updates = deps.parseVmPolicyRequest(request.body);
+      const nextConfig = JSON.parse(JSON.stringify(storedConfig.config || {}));
+      nextConfig.vm = {
+        ...(nextConfig.vm || {}),
+        ...updates,
+      };
+
+      const preparedPayload = await deps.prepareVmConfigForSave(
+        { config: nextConfig },
+        { existingVmName: request.params.name },
+      );
+      const savedConfig = await deps.saveVmConfig(preparedPayload, { overwrite: true });
+      await deps.reconcileVmNetworking({ policyOnly: true });
+      response.json({
+        vmName: request.params.name,
+        configPath: savedConfig.configPath,
+        config: savedConfig.config,
       });
     }),
   );

@@ -31,6 +31,7 @@ try:
         create,
         destroy,
         list_snapshots,
+        reconcile_networking,
         snapshot_create,
         snapshot_delete,
         snapshot_restore,
@@ -49,6 +50,19 @@ except Exception as exc:  # pragma: no cover - environment bootstrap path
     IMPORT_ERROR = exc
 
 
+class BridgeActionExitError(RuntimeError):
+    """Raised when a provisioner action exits without returning normally."""
+
+    def __init__(self, exit_code, output_text=""):
+        self.details = {
+            "code": "action_exited",
+            "exit_code": exit_code,
+            "output": output_text or None,
+        }
+        message = output_text or f"Provisioner action exited with status {exit_code}"
+        super().__init__(message)
+
+
 def emit(payload, exit_code=0):
     """Print a JSON payload and terminate the process.
 
@@ -64,7 +78,7 @@ def emit(payload, exit_code=0):
     raise SystemExit(exit_code)
 
 
-def capture_action(action, *args):
+def capture_action(action, *args, **kwargs):
     """Capture stdout produced by a provisioner callable.
 
     Args:
@@ -79,9 +93,32 @@ def capture_action(action, *args):
     """
 
     output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        action(*args)
+    try:
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            action(*args, **kwargs)
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        if exit_code in (0, None):
+            return output.getvalue().strip()
+        raise BridgeActionExitError(exit_code, output.getvalue().strip()) from exc
+
     return output.getvalue().strip()
+
+
+def capture_action_result(action, *args, **kwargs):
+    """Capture stdout and the return value produced by a provisioner callable."""
+
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            result = action(*args, **kwargs)
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        if exit_code in (0, None):
+            return None, output.getvalue().strip()
+        raise BridgeActionExitError(exit_code, output.getvalue().strip()) from exc
+
+    return result, output.getvalue().strip()
 
 
 def read_dominfo(vm_name):
@@ -277,6 +314,22 @@ def handle_snapshot_delete(vm_name, snapshot_id):
     emit({"success": True, "output": output, "name": vm_name, "snapshot_id": snapshot_id})
 
 
+def handle_reconcile(policy_only=False, allow_destructive=False):
+    """Reconcile managed networking and emit a JSON response."""
+    result, output = capture_action_result(
+        reconcile_networking,
+        policy_only=policy_only,
+        allow_destructive=allow_destructive,
+    )
+    emit(
+        {
+            "success": True,
+            "reconciled": result,
+            "output": output,
+        }
+    )
+
+
 def handle_list():
     """Emit a JSON response containing all known VMs.
 
@@ -321,6 +374,8 @@ def build_parser():
     """
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--policy-only", action="store_true")
+    parser.add_argument("--allow-destructive", action="store_true")
     parser.add_argument(
         "command",
         choices=(
@@ -332,6 +387,7 @@ def build_parser():
             "snapshot-create",
             "snapshot-restore",
             "snapshot-delete",
+            "reconcile",
             "inspect",
             "list",
             "host-list",
@@ -354,6 +410,9 @@ def main():
     try:
         if IMPORT_ERROR is not None:
             raise IMPORT_ERROR
+
+        if args.command != "reconcile" and (args.policy_only or args.allow_destructive):
+            raise ValueError("Reconcile flags are only valid with the reconcile command")
 
         if args.command == "create":
             if len(args.values) != 1:
@@ -394,6 +453,14 @@ def main():
             if len(args.values) != 2:
                 raise ValueError("snapshot-delete requires a VM name and snapshot ID")
             handle_snapshot_delete(args.values[0], args.values[1])
+
+        elif args.command == "reconcile":
+            if args.values:
+                raise ValueError("reconcile does not accept additional arguments")
+            handle_reconcile(
+                policy_only=args.policy_only,
+                allow_destructive=args.allow_destructive,
+            )
 
         elif args.command == "inspect":
             if len(args.values) != 1:
