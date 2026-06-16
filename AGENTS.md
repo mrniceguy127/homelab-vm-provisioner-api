@@ -1,208 +1,100 @@
 # Homelab VM Provisioner API
 
-Express.js REST API that wraps the Python CLI for VM provisioning with privilege management and configuration storage.
+Express.js REST API wrapping Python CLI for VM provisioning with privilege management.
 
-## Architecture
+## Quick Start
 
-### Core Modules
-- **app.js**: Express app setup, route registration, error handling
-- **server.js**: HTTP server initialization
-- **provisioner.js**: Python CLI subprocess management
-- **validation.js**: Zod schemas for request validation
-- **config-store.js**: YAML configuration file management
-- **network-model.js**: Network configuration validation and CIDR math
-- **privileges.js**: Privilege escalation checks
-
-### API Routes
-```
-POST /api/provision       # Create new VM
-POST /api/reconcile       # Sync VMs to desired state  
-GET  /api/config          # Retrieve stored configuration
-POST /api/config          # Save configuration
-```
-
-## Build and Test
-
-### Commands
 ```bash
-npm test          # Run all tests (vitest)
-npm run coverage  # Generate coverage report (85% minimum)
-npm start         # Start production server
-npm run docs:build # Build JSDoc documentation
-npm run build     # Run coverage + docs (for CI/CD)
+npm test && npm run coverage  # Test with 85% minimum
+npm start                     # Production server
+npm run docs:build            # Build JSDoc docs
 ```
 
-### Test Files
-- `test/app.test.js`: HTTP endpoint tests (supertest)
-- `test/validation.test.js`: Schema validation tests
-- `test/network-model.test.js`: CIDR and network logic tests
+## API Surface
 
-### Python Bridge
-Located in `bridge/hlvmp_bridge.py` - provides JSON-based interface to Python CLI.
+Main endpoint areas:
+- VM lifecycle (provision, start, stop, destroy, clone)
+- Network management (users, network groups)
+- Snapshots and logs
+- Firewall policy updates
+
+Generated API docs and source route/schema comments are the source of truth for exact routes, request/response bodies, validation rules, status codes, and examples.
+
+## Documentation Sources
+
+Before editing API docs or endpoint behavior:
+- Inspect the API project's docs configuration and existing doc comments.
+- Follow the repo's existing documentation layout.
+- Run `npm run docs:build` to build JSDoc documentation.
+- Do not duplicate full endpoint documentation in `AGENTS.md`.
+
+## Project Structure
+
+```
+src/
+├── app.js              # Express routes & middleware
+├── server.js           # HTTP server
+├── provisioner.js      # Python CLI subprocess
+├── validation.js       # Zod schemas
+├── config-store.js     # YAML config management
+├── network-model.js    # Network validation & CIDR
+└── privileges.js       # Privilege checks
+
+test/
+├── app.test.js         # HTTP endpoint tests
+├── validation.test.js  # Schema tests
+└── network-model.test.js # Network logic tests
+
+bridge/
+└── hlvmp_bridge.py     # Python CLI JSON interface
+```
 
 ## Code Style
 
-### General
-- ES modules (`import`/`export`, `type: "module"`)
+**Framework**: Express + ES modules  
+**Testing**: vitest + supertest  
+**Validation**: Zod schemas  
+**Coverage**: 85% minimum (enforced)  
+**Docs**: JSDoc + documentation.js
+
+**Key Patterns**:
 - Async/await for all async operations
-- No default exports, use named exports
+- Named exports only (no defaults)
+- Centralized error middleware
+- Mock subprocess calls in tests
 
-### Express
-- Middleware: express.json() for parsing
-- Error handling: centralized error middleware
-- Routes: Return JSON with appropriate HTTP status codes
+## AI Agents
 
-### Testing
-- Vitest with supertest for HTTP testing
-- Mock subprocess calls to Python CLI
-- Test both success and error paths
+Project-specific OpenCode agents live in `.opencode/agents/`.
 
-## Testing Conventions
+### Usage
 
-### What to Test
-- **Request validation**: Invalid inputs return 400
-- **Subprocess communication**: Python bridge called correctly
-- **Error handling**: Failed operations return 500
-- **Config storage**: YAML read/write operations
-- **Network logic**: CIDR calculations, IP validation
-
-### Test Structure
-```javascript
-import { describe, it, expect, vi } from 'vitest';
-import request from 'supertest';
-import app from '../src/app.js';
-
-describe('POST /api/provision', () => {
-  it('should validate required fields', async () => {
-    const response = await request(app)
-      .post('/api/provision')
-      .send({});
-    expect(response.status).toBe(400);
-  });
-});
-```
-
-### Coverage
-- Aim for 85%+ line and branch coverage
-- Focus on edge cases: empty inputs, subprocess failures, file system errors
-- Use `vi.mock()` to isolate units from dependencies
-
-## Documentation
-
-### JSDoc Style
-```javascript
-/**
- * Provision a new VM with the given configuration.
- * @param {Object} config - VM configuration object
- * @param {string} config.name - VM name
- * @param {string} config.template - OS template name
- * @returns {Promise<Object>} Provisioning result with VM details
- * @throws {Error} If provisioning fails
- */
-```
-
-### Build Documentation
 ```bash
-npm run docs:build
-# Output: docs/_build/html/index.html
+# Direct invocation (recommended)
+@.opencode/agents/test-writer.md Write tests for validation.js
+@.opencode/agents/coverage-runner.md Check coverage
 ```
 
-### What to Document
-- Exported functions and classes
-- Complex algorithms (especially in network-model.js)
-- API endpoint contracts
-- Error conditions
+### Available Agents
 
-## Common Patterns
+- **test-writer.md** - vitest + supertest patterns
+- **coverage-runner.md** - 85% enforcement
+- **feature-developer.md** - Express + Zod patterns
+- **defect-fixer.md** - Node.js debugging
+- **doc-writer.md** - JSDoc patterns
 
-### Subprocess Management
-```javascript
-import { spawn } from 'child_process';
+## Testing Essentials
 
-// Always use bridge script for Python communication
-const process = spawn('python3', ['bridge/hlvmp_bridge.py', 'provision']);
-```
+**Framework**: vitest (NOT jest)  
+**HTTP Testing**: supertest for endpoint tests  
+**Mocking**: Mock Python bridge subprocess calls  
+**Coverage Target**: 85% minimum
 
-### Error Responses
-```javascript
-// Client errors (400)
-res.status(400).json({ error: 'Invalid configuration', details: zodError });
+**Pattern Discovery**: Before writing tests, inspect nearby existing tests and follow their style.
 
-// Server errors (500)
-res.status(500).json({ error: 'Provisioning failed', message: error.message });
-```
+## Common Issues
 
-### Configuration Storage
-```javascript
-import { loadConfig, saveConfig } from './config-store.js';
-
-// YAML stored at configured path, defaults to vmctl.yaml
-const config = await loadConfig(configPath);
-await saveConfig(configPath, updatedConfig);
-```
-
-## Key Gotchas
-
-### Python Bridge
-- Bridge script expects JSON on stdin, returns JSON on stdout
-- Always handle stderr for Python errors
-- Subprocess must complete before response is sent
-
-### Privilege Management
-- API runs as non-root user
-- Python CLI requires root for libvirt operations
-- Use `privileges.js` to check/request elevation
-
-### File System
-- Config files use YAML format (js-yaml library)
-- Paths may be relative or absolute
-- Handle file not found gracefully (create with defaults)
-
-### Validation
-- Use Zod schemas defined in `validation.js`
-- Validate early (in route handler)
-- Return detailed error messages for debugging
-
-### Testing
-- Mock child_process for Python bridge tests
-- Mock fs/promises for config-store tests
-- Use supertest for integration tests (full request/response cycle)
-
-## Dependencies
-
-### Production
-- **express**: Web framework
-- **js-yaml**: YAML parsing/serialization
-- **zod**: Schema validation
-
-### Development
-- **vitest**: Test runner and assertions
-- **supertest**: HTTP testing library
-- **@vitest/coverage-v8**: Code coverage
-- **documentation**: JSDoc HTML generator
-
-## Development Workflow
-
-1. **Add endpoint**: Define route in app.js, add validation schema
-2. **Write tests**: Test success and error cases with supertest
-3. **Implement**: Call Python bridge, handle errors, return JSON
-4. **Run coverage**: `npm run coverage` (must hit 85%)
-5. **Update docs**: Add JSDoc comments, run `npm run docs:build`
-6. **Integration test**: Test with actual Python CLI in development
-
-## Specialized Agents
-
-For common tasks, use the specialized agents in `../agents/`:
-- **test-writer**: Generate tests following API patterns
-- **coverage-runner**: Analyze coverage gaps
-- **feature-developer**: Implement new endpoints
-- **defect-fixer**: Debug API issues
-- **doc-writer**: Update API documentation
-
-See `../agents/README.md` for usage across different platforms.
-
-## Related Documentation
-
-- Parent: `../AGENTS.md` (monorepo overview)
-- Python CLI: `homelab-vm-provisioner/AGENTS.md`
-- Client: `../homelab-vm-provisioner-client/AGENTS.md`
+- Missing async/await in routes
+- Unhandled errors (use try/catch + error middleware)
+- Validation schema gaps
+- Subprocess communication errors
