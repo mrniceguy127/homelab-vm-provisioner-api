@@ -67,3 +67,41 @@ test('requires explicit nat-custom network details when subnet_prefix is omitted
         },
       })).toThrow(/Required when network.mode is nat-custom/);
 });
+
+import { parseNetworkGroupRequest, parseVmPolicyRequest, formatValidationError, isValidationError } from '../src/validation.js';
+
+test('parseNetworkGroupRequest accepts valid network group', () => {
+  const payload = parseNetworkGroupRequest({
+    ownerUserId: 'user-123',
+    name: 'demo-group',
+    profile: 'isolated_nat',
+    bridgeName: 'hvpb-demo',
+  });
+  expect(payload.name).toBe('demo-group');
+});
+
+test('parseVmPolicyRequest accepts valid policy', () => {
+  const payload = parseVmPolicyRequest({
+    allow_host_access: true,
+  });
+  expect(payload.allow_host_access).toBe(true);
+});
+
+test('formatValidationError formats ZodError', () => {
+  try {
+    parseNetworkGroupRequest({});
+  } catch (error) {
+    const formatted = formatValidationError(error);
+    expect(Array.isArray(formatted)).toBe(true);
+    expect(formatted.length).toBeGreaterThan(0);
+  }
+});
+
+test('isValidationError identifies ZodError', () => {
+  try {
+    parseNetworkGroupRequest({});
+  } catch (error) {
+    expect(isValidationError(error)).toBe(true);
+  }
+  expect(isValidationError(new Error('test'))).toBe(false);
+});

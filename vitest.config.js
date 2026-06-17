@@ -8,6 +8,12 @@ export default defineConfig({
       reportsDirectory: '.build/coverage',
       reporter: ['text', 'html', 'lcov'],
       include: ['src/**/*.js'],
+      thresholds: {
+        lines: 85,
+        functions: 85,
+        branches: 64,
+        statements: 85,
+      },
     },
   },
 });

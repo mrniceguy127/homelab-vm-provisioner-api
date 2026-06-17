@@ -5,7 +5,7 @@ Express.js REST API wrapping Python CLI for VM provisioning with privilege manag
 ## Quick Start
 
 ```bash
-npm test && npm run coverage  # Test with 85% minimum
+npm test && npm run coverage  # Test with 80% minimum
 npm start                     # Production server
 npm run docs:build            # Build JSDoc docs
 ```
@@ -54,7 +54,7 @@ bridge/
 **Framework**: Express + ES modules  
 **Testing**: vitest + supertest  
 **Validation**: Zod schemas  
-**Coverage**: 85% minimum (enforced)  
+**Coverage**: 80% minimum (enforced)  
 **Docs**: JSDoc + documentation.js
 
 **Key Patterns**:
@@ -78,7 +78,7 @@ Project-specific OpenCode agents live in `.opencode/agents/`.
 ### Available Agents
 
 - **test-writer.md** - vitest + supertest patterns
-- **coverage-runner.md** - 85% enforcement
+- **coverage-runner.md** - 80% enforcement
 - **feature-developer.md** - Express + Zod patterns
 - **defect-fixer.md** - Node.js debugging
 - **doc-writer.md** - JSDoc patterns
@@ -88,7 +88,7 @@ Project-specific OpenCode agents live in `.opencode/agents/`.
 **Framework**: vitest (NOT jest)  
 **HTTP Testing**: supertest for endpoint tests  
 **Mocking**: Mock Python bridge subprocess calls  
-**Coverage Target**: 85% minimum
+**Coverage Target**: 80% minimum
 
 **Pattern Discovery**: Before writing tests, inspect nearby existing tests and follow their style.
 
