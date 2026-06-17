@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROVISIONER_DIR="$SCRIPT_DIR/homelab-vm-provisioner"
+PROVISIONER_DIR="$SCRIPT_DIR/homelab-vm-provisioner-cli"
 
 # Source component .env (parent vars inherited through execution sequence)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then

@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const apiRoot = path.resolve(__dirname, '..');
-export const provisionerRoot = process.env.HLVMP_PROVISIONER_DIR || path.join(apiRoot, 'homelab-vm-provisioner');
+export const provisionerRoot = process.env.HLVMP_PROVISIONER_DIR || path.join(apiRoot, 'homelab-vm-provisioner-cli');
 export const legacyRuntimeRoot = process.env.HLVMP_API_RUNTIME_DIR || path.join(apiRoot, 'runtime');
 export const legacyConfigRoot = path.join(legacyRuntimeRoot, 'configs');
 export const legacyUserKeyRoot = path.join(legacyRuntimeRoot, 'keys', 'users');
