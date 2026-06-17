@@ -4,7 +4,7 @@ Express API for the `homelab-vm-provisioner-cli` Python module.
 
 This service stores VM configs, validates requests, calls the nested Python provisioner, exposes VM inventory/details endpoints, and provides both snapshot and streaming log access.
 
-When this repository is checked out as part of the full `homelab-vm-provisioner-webapp` workspace, prefer the workspace root `setup`, `build`, and `start` scripts for end-to-end setup and local runs.
+When this repository is checked out as part of the full `homelab-vm-provisioner` workspace, prefer the workspace root `setup`, `build`, and `start` scripts for end-to-end setup and local runs.
 
 ## Architecture
 
