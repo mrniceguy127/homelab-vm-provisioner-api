@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 API_ROOT = Path(__file__).resolve().parent.parent
-PROVISIONER_ROOT = API_ROOT / "homelab-vm-provisioner"
+PROVISIONER_ROOT = API_ROOT / "homelab-vm-provisioner-cli"
 
 if str(PROVISIONER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVISIONER_ROOT))

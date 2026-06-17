@@ -11,6 +11,17 @@ npm start                     # Production server
 npm run docs:build            # Build JSDoc docs
 ```
 
+## Configuration
+
+Copy `.env.example` to `.env` and customize:
+
+```bash
+cp .env.example .env
+# Edit .env to set API_PORT, PROVISIONER_VENV_DIR, HLVMP_* variables
+```
+
+**Note**: When called from parent scripts, this component inherits workspace `.env` variables. This component's `.env` overrides those inherited values. Variables not set here remain inherited from parent.
+
 ## API Surface
 
 Main endpoint areas:

@@ -1,6 +1,3 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import express from 'express';
 
 import {
@@ -38,11 +35,6 @@ import {
   parseNetworkGroupRequest,
   parseVmPolicyRequest,
 } from './validation.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const staticRoot = path.resolve(__dirname, '../public');
-const staticIndexPath = path.join(staticRoot, 'index.html');
 
 const defaultDependencies = {
   configPathForVm,
@@ -523,16 +515,6 @@ export function createApp(deps = defaultDependencies) {
       await deps.streamVmLog(request.params.name, response, lines);
     }),
   );
-
-  app.use(express.static(staticRoot, { index: false }));
-
-  app.get(/^\/(?!api(?:\/|$)|health$).*/, (request, response, next) => {
-    response.sendFile(staticIndexPath, (error) => {
-      if (error) {
-        next();
-      }
-    });
-  });
 
   app.use((request, response) => {
     response.status(404).json({
