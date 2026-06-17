@@ -13,7 +13,7 @@
     "test": "npm run lint && node ./node_modules/vitest/vitest.mjs run",
     "coverage": "npm run lint && node ./node_modules/vitest/vitest.mjs run --coverage",
     "docs:build": "node scripts/build-docs.js",
-    "build": "npm run coverage && npm run docs:build"
+    "build": "npm run docs:build"
   },
   "dependencies": {
     "express": "^4.21.2",

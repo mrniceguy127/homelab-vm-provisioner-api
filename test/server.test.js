@@ -42,14 +42,14 @@ describe('server', () => {
     vi.restoreAllMocks();
   });
 
-  it('starts server on default port 3000', async () => {
+  it('starts server on default port 3001', async () => {
     delete process.env.PORT;
     vi.resetModules();
 
     await import('../src/server.js');
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockApp.listen).toHaveBeenCalledWith(3000, expect.any(Function));
+    expect(mockApp.listen).toHaveBeenCalledWith(3001, expect.any(Function));
   });
 
   it('starts server on custom port from environment', async () => {

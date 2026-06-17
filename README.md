@@ -33,7 +33,7 @@ If you did not clone with submodules, initialize them first:
 git submodule update --init --recursive
 ```
 
-For the full workspace setup from the workspace root, including Python provisioner setup, npm installs, client build, and deployment of the client bundle into the API `public/` directory, run:
+For the full workspace setup from the workspace root, including Python provisioner setup and npm installs, run:
 
 ```bash
 ./setup
@@ -45,9 +45,13 @@ If system packages are already installed on the host, run:
 ./setup --skip-system-packages
 ```
 
-For a repeatable rebuild after dependencies are already installed, run:
+After setup completes, build the workspace:
 
 ```bash
+./build
+```
+
+For a rebuild after dependencies are already installed, just run `./build`.
 ./build
 ```
 
@@ -79,13 +83,13 @@ The API must be started as your normal user, not as `root`.
 
 At startup it securely runs `sudo -v` so later `virsh`/libvirt commands can use `sudo` only where needed. During the same startup preflight it also repairs ownership under the legacy API runtime directory plus the nested provisioner `configs/` and `vm/` directories so future config/state files stay user-owned.
 
-Default port: `3000`
+Default port: `3001`
 
 ## Environment Variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `3000` | Express listen port |
+| `PORT` | `3001` | Express listen port |
 | `HLVMP_PROVISIONER_DIR` | `./homelab-vm-provisioner` | Path to the nested Python provisioner checkout |
 | `HLVMP_API_RUNTIME_DIR` | `./runtime` | Legacy migration source for older API-managed config, key, and VM data files |
 | `HLVMP_NETWORK_POOL_CIDR` | `10.80.0.0/16` | Global private pool used for managed network-group subnet allocation |
@@ -132,11 +136,20 @@ The managed networking reconciler now renders VM policy into application-owned n
 
 ## Developer Commands
 
+**Build** (docs only, no tests):
 ```bash
-npm test
-npm run coverage
-npm run docs:build
 npm run build
+```
+
+**Test**:
+```bash
+npm test              # Lint + unit tests
+npm run coverage      # Lint + tests + coverage report
+```
+
+**Docs**:
+```bash
+npm run docs:build
 ```
 
 Helper scripts mirroring the Python provisioner workflow are also available:
