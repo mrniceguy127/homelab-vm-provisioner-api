@@ -268,7 +268,6 @@ network:
     });
 
     it('throws when chown fails', async () => {
-      let callCount = 0;
       const mockSudoSuccess = {
         stdout: { on: vi.fn() },
         stderr: { on: vi.fn() },
@@ -290,7 +289,6 @@ network:
       };
 
       spawn.mockImplementation((cmd, args) => {
-        callCount++;
         if (args.includes('chown')) return mockChownFail;
         return mockSudoSuccess;
       });

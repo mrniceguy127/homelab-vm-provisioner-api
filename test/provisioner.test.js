@@ -484,9 +484,7 @@ describe('provisioner', () => {
         }),
       };
 
-      let callCount = 0;
       spawn.mockImplementation((cmd, args) => {
-        callCount++;
         if (args.includes('test')) return mockTestChild;
         return mockTailChild;
       });
@@ -567,9 +565,7 @@ describe('provisioner', () => {
         kill: vi.fn(),
       };
 
-      let callCount = 0;
       spawn.mockImplementation((cmd, args) => {
-        callCount++;
         if (args.includes('test')) return mockTestChild;
         return mockTailChild;
       });
@@ -613,9 +609,7 @@ describe('provisioner', () => {
         kill: vi.fn(),
       };
 
-      let callCount = 0;
       spawn.mockImplementation((cmd, args) => {
-        callCount++;
         if (args.includes('test')) return mockTestChild;
         return mockTailChild;
       });

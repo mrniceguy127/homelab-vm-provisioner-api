@@ -5,7 +5,8 @@ Express.js REST API wrapping Python CLI for VM provisioning with privilege manag
 ## Quick Start
 
 ```bash
-npm test && npm run coverage  # Test with 80% minimum
+npm test && npm run coverage  # Lint + test with 80% minimum
+npm run lint                     # ESLint only
 npm start                     # Production server
 npm run docs:build            # Build JSDoc docs
 ```
@@ -55,6 +56,7 @@ bridge/
 **Testing**: vitest + supertest  
 **Validation**: Zod schemas  
 **Coverage**: 80% minimum (enforced)  
+**Linting**: ESLint (required before tests run)  
 **Docs**: JSDoc + documentation.js
 
 **Key Patterns**:

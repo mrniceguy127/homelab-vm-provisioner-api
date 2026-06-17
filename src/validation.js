@@ -15,11 +15,6 @@ function isIpv4Prefix(value) {
   return parts.length === 3 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
 }
 
-function isIpv4Slash24(value) {
-  const [address, prefixLength] = value.split('/');
-  return prefixLength === '24' && isIpv4Address(address);
-}
-
 function isIpv4Cidr(value) {
   const [address, prefixLengthText] = value.split('/');
   const prefixLength = Number.parseInt(prefixLengthText, 10);
