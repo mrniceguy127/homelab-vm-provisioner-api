@@ -7,6 +7,7 @@ import {
   loadStoredConfig,
   saveVmConfig,
 } from './config-store.js';
+import { getRepository, isDatabaseAvailable } from './db.js';
 import {
   createNetworkGroup,
   listNetworkGroups,
@@ -64,6 +65,8 @@ const defaultDependencies = {
   parseVmPolicyRequest,
   formatValidationError,
   isValidationError,
+  getRepository,
+  isDatabaseAvailable,
 };
 
 /**

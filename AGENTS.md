@@ -18,6 +18,33 @@ Copy `.env.example` to `.env` and customize:
 ```bash
 cp .env.example .env
 # Edit .env to set API_PORT, PROVISIONER_VENV_DIR, HLVMP_* variables
+# Set DATABASE_URL to enable job queue features
+```
+
+**Database Setup** (optional, for async job queue):
+```bash
+# Native PostgreSQL (recommended)
+cd ../homelab-vm-provisioner-db
+./setup
+./start
+npm run migrate
+
+# Create database and user
+sudo -u postgres psql -c "CREATE DATABASE hlvmp;"
+sudo -u postgres psql -c "CREATE USER hlvmp WITH PASSWORD 'hlvmppass';"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE hlvmp TO hlvmp;"
+
+# Set DATABASE_URL in API .env
+DATABASE_URL=postgresql://hlvmp:hlvmppass@localhost:5432/hlvmp
+
+# Docker mode (development)
+cd ../homelab-vm-provisioner-db
+./setup --docker
+./start --docker
+npm run migrate
+
+# Set DATABASE_URL in API .env
+DATABASE_URL=postgresql://hlvmp:hlvmppass@localhost:5432/hlvmp
 ```
 
 **Note**: When called from parent scripts, this component inherits workspace `.env` variables. This component's `.env` overrides those inherited values. Variables not set here remain inherited from parent.
@@ -29,6 +56,13 @@ Main endpoint areas:
 - Network management (users, network groups)
 - Snapshots and logs
 - Firewall policy updates
+- Job queue (internal - uses database microservice for async operations)
+
+**Database Microservice Integration:**
+- The API uses a database microservice (port 3002) internally for async job operations
+- Job queue endpoints are **not exposed** to external API users
+- The API uses the job repository internally (e.g., for VM provisioning)
+- Requires `DB_SERVICE_URL` and `DB_SERVICE_PASSWORD` configuration
 
 Generated API docs and source route/schema comments are the source of truth for exact routes, request/response bodies, validation rules, status codes, and examples.
 
@@ -46,6 +80,7 @@ Before editing API docs or endpoint behavior:
 src/
 ├── app.js              # Express routes & middleware
 ├── server.js           # HTTP server
+├── db.js               # Database microservice client
 ├── provisioner.js      # Python CLI subprocess
 ├── validation.js       # Zod schemas
 ├── config-store.js     # YAML config management
