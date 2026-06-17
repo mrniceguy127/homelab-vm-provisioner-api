@@ -5,7 +5,6 @@ runtime/
 .build/
 docs/_build/
 .env
-.env.*
 .env.local
 npm-debug.log*
 __pycache__/
