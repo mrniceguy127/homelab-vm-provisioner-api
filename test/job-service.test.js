@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
 
 import { createJobService } from '../src/job-service.js';
+import * as socketClient from '../src/socket-client.js';
 
 function buildMockRepository() {
   return {
@@ -218,4 +219,118 @@ test('getJobEvents accepts custom limit', async () => {
   await service.getJobEvents(123, 50);
   
   expect(mockRepo.listJobEvents).toHaveBeenCalledWith(123, 50);
+});
+
+test('enqueueVmProvisionJob attempts worker wakeup when socket configured', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 123,
+    type: 'provision_vm',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { configPath: '/configs/test-vm.yaml' },
+    created_at: new Date(),
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(true);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+    workerSocket: '/run/hlvmp/worker.sock',
+  });
+  
+  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  
+  expect(result).toEqual(mockJob);
+  expect(wakeWorkerSpy).toHaveBeenCalledWith('/run/hlvmp/worker.sock', expect.any(Object));
+  
+  wakeWorkerSpy.mockRestore();
+});
+
+test('enqueueVmProvisionJob succeeds even if worker wakeup fails', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 123,
+    type: 'provision_vm',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { configPath: '/configs/test-vm.yaml' },
+    created_at: new Date(),
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(false);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+    workerSocket: '/run/hlvmp/worker.sock',
+  });
+  
+  // Should still succeed even if wake fails
+  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  
+  expect(result).toEqual(mockJob);
+  expect(wakeWorkerSpy).toHaveBeenCalled();
+  
+  wakeWorkerSpy.mockRestore();
+});
+
+test('enqueueVmProvisionJob does not attempt wakeup when socket not configured', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 123,
+    type: 'provision_vm',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { configPath: '/configs/test-vm.yaml' },
+    created_at: new Date(),
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker');
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+    workerSocket: null,
+  });
+  
+  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  
+  expect(result).toEqual(mockJob);
+  // wakeWorker should not be called when socket is null
+  expect(wakeWorkerSpy).not.toHaveBeenCalled();
+  
+  wakeWorkerSpy.mockRestore();
+});
+
+test('all enqueue methods attempt worker wakeup', async () => {
+  const mockRepo = buildMockRepository();
+  mockRepo.enqueueJob.mockResolvedValue({ id: 123 });
+  
+  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(true);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+    workerSocket: '/run/hlvmp/worker.sock',
+  });
+  
+  await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  await service.enqueueVmDestroyJob('test-vm');
+  await service.enqueueVmCloneJob('source-vm', 'new-vm', '/configs/new-vm.yaml');
+  await service.enqueueVmReconcileJob({ policyOnly: true });
+  
+  expect(wakeWorkerSpy).toHaveBeenCalledTimes(4);
+  
+  wakeWorkerSpy.mockRestore();
 });

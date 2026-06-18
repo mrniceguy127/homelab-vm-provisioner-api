@@ -5,6 +5,8 @@
  * by the worker daemon.
  */
 
+import { wakeWorker } from './socket-client.js';
+
 /**
  * Create an error with a specific HTTP status code
  * 
@@ -24,9 +26,11 @@ function createJobServiceError(message, statusCode = 500) {
  * @param {object} options - Service options
  * @param {object} options.repository - Job repository client
  * @param {string|null} options.hostId - API host ID (null if not configured)
+ * @param {string|null} options.workerSocket - Worker socket path (null if not configured)
+ * @param {object} options.logger - Logger instance (default: console)
  * @returns {object} Job service
  */
-export function createJobService({ repository, hostId }) {
+export function createJobService({ repository, hostId, workerSocket = null, logger = console }) {
   /**
    * Ensure host ID is configured
    * 
@@ -38,6 +42,17 @@ export function createJobService({ repository, hostId }) {
         'HOST_ID is not configured. Cannot enqueue jobs without a target host.',
         500
       );
+    }
+  }
+
+  /**
+   * Wake the colocated worker after enqueueing a job
+   * 
+   * This is a best-effort operation that does not affect the job enqueue result.
+   */
+  async function notifyWorker() {
+    if (workerSocket) {
+      await wakeWorker(workerSocket, { logger });
     }
   }
   
@@ -52,12 +67,15 @@ export function createJobService({ repository, hostId }) {
     async enqueueVmProvisionJob(vmName, configPath) {
       requireHostId();
       
-      return repository.enqueueJob(
+      const job = await repository.enqueueJob(
         'provision_vm',
         hostId,
         { configPath },
         { targetVmId: vmName, maxAttempts: 3 }
       );
+      
+      await notifyWorker();
+      return job;
     },
     
     /**
@@ -69,12 +87,15 @@ export function createJobService({ repository, hostId }) {
     async enqueueVmDestroyJob(vmName) {
       requireHostId();
       
-      return repository.enqueueJob(
+      const job = await repository.enqueueJob(
         'destroy_vm',
         hostId,
         { vmName },
         { targetVmId: vmName, maxAttempts: 1 }
       );
+      
+      await notifyWorker();
+      return job;
     },
     
     /**
@@ -88,12 +109,15 @@ export function createJobService({ repository, hostId }) {
     async enqueueVmCloneJob(sourceVmName, targetVmName, configPath) {
       requireHostId();
       
-      return repository.enqueueJob(
+      const job = await repository.enqueueJob(
         'clone_vm',
         hostId,
         { sourceVmName, configPath },
         { targetVmId: targetVmName, maxAttempts: 3 }
       );
+      
+      await notifyWorker();
+      return job;
     },
     
     /**
@@ -106,12 +130,15 @@ export function createJobService({ repository, hostId }) {
     async enqueueVmReconcileJob(options = {}) {
       requireHostId();
       
-      return repository.enqueueJob(
+      const job = await repository.enqueueJob(
         'reconcile_vm_networking',
         hostId,
         options,
         { targetVmId: null, maxAttempts: 1 }
       );
+      
+      await notifyWorker();
+      return job;
     },
     
     /**
