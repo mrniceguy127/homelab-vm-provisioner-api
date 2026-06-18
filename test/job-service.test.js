@@ -146,7 +146,7 @@ test('enqueueVmProvisionJob throws error when hostId is not configured', async (
   
   await expect(
     service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml')
-  ).rejects.toThrow('API_HOST_ID is not configured');
+  ).rejects.toThrow('HOST_ID is not configured');
 });
 
 test('getJobById retrieves a job by ID', async () => {

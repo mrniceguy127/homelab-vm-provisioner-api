@@ -236,7 +236,7 @@ export function createApp(deps = defaultDependencies) {
   app.use(express.json({ limit: '1mb' }));
 
   // Initialize job service if database is available
-  const hostId = process.env.API_HOST_ID || null;
+  const hostId = process.env.HOST_ID || null;
   let jobService = null;
   
   if (deps.isDatabaseAvailable()) {

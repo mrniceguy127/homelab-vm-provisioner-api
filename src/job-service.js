@@ -35,7 +35,7 @@ export function createJobService({ repository, hostId }) {
   function requireHostId() {
     if (!hostId) {
       throw createJobServiceError(
-        'API_HOST_ID is not configured. Cannot enqueue jobs without a target host.',
+        'HOST_ID is not configured. Cannot enqueue jobs without a target host.',
         500
       );
     }
