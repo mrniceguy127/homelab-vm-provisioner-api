@@ -101,6 +101,9 @@ function buildDeps(overrides = {}) {
     parseVmPolicyRequest,
     formatValidationError,
     isValidationError,
+    getRepository: () => null,
+    isDatabaseAvailable: () => false,
+    createJobService: () => null,
     ...overrides,
   };
 }

@@ -8,6 +8,7 @@ import {
   saveVmConfig,
 } from './config-store.js';
 import { getRepository, isDatabaseAvailable } from './db.js';
+import { createJobService } from './job-service.js';
 import {
   createNetworkGroup,
   listNetworkGroups,
@@ -67,6 +68,7 @@ const defaultDependencies = {
   isValidationError,
   getRepository,
   isDatabaseAvailable,
+  createJobService,
 };
 
 /**
@@ -233,6 +235,19 @@ export function createApp(deps = defaultDependencies) {
 
   app.use(express.json({ limit: '1mb' }));
 
+  // Initialize job service if database is available
+  const hostId = process.env.API_HOST_ID || null;
+  let jobService = null;
+  
+  if (deps.isDatabaseAvailable()) {
+    try {
+      const repository = deps.getRepository();
+      jobService = deps.createJobService({ repository, hostId });
+    } catch (error) {
+      console.warn('Failed to initialize job service:', error.message);
+    }
+  }
+
   app.get('/health', (_request, response) => {
     response.json({ ok: true });
   });
@@ -277,21 +292,39 @@ export function createApp(deps = defaultDependencies) {
       const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload);
-      let provisioned;
-      try {
-        provisioned = await deps.createVm(savedConfig.configPath);
-      } catch (error) {
+      
+      // Enqueue job for asynchronous provisioning
+      if (!jobService) {
+        // Fallback to synchronous provisioning if job service unavailable
+        let provisioned;
         try {
-          await deps.deleteSavedConfigArtifacts(savedConfig);
-        } catch (cleanupError) {
-          console.error(cleanupError.message || cleanupError);
+          provisioned = await deps.createVm(savedConfig.configPath);
+        } catch (error) {
+          try {
+            await deps.deleteSavedConfigArtifacts(savedConfig);
+          } catch (cleanupError) {
+            console.error(cleanupError.message || cleanupError);
+          }
+          throw error;
         }
-        throw error;
-      }
 
-      response.status(201).json({
+        response.status(201).json({
+          ...savedConfig,
+          provisioned,
+        });
+        return;
+      }
+      
+      // Enqueue job
+      const job = await jobService.enqueueVmProvisionJob(
+        savedConfig.config.vm.name,
+        savedConfig.configPath
+      );
+      
+      response.status(202).json({
         ...savedConfig,
-        provisioned,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -316,11 +349,29 @@ export function createApp(deps = defaultDependencies) {
         throw createConflictError(`VM name is already in use by a live VM: ${request.params.name}`);
       }
 
-      const provisioned = await deps.createVm(storedConfig.configPath);
-      response.status(201).json({
+      // Enqueue job for asynchronous provisioning
+      if (!jobService) {
+        // Fallback to synchronous provisioning if job service unavailable
+        const provisioned = await deps.createVm(storedConfig.configPath);
+        response.status(201).json({
+          name: request.params.name,
+          configPath: storedConfig.configPath,
+          provisioned,
+        });
+        return;
+      }
+      
+      // Enqueue job
+      const job = await jobService.enqueueVmProvisionJob(
+        request.params.name,
+        storedConfig.configPath
+      );
+      
+      response.status(202).json({
         name: request.params.name,
         configPath: storedConfig.configPath,
-        provisioned,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -384,10 +435,25 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const destroyed = await deps.destroyVm(request.params.name);
-      response.json({
+      
+      // Enqueue job for asynchronous deletion
+      if (!jobService) {
+        // Fallback to synchronous deletion if job service unavailable
+        const destroyed = await deps.destroyVm(request.params.name);
+        response.json({
+          name: request.params.name,
+          destroyed,
+        });
+        return;
+      }
+      
+      // Enqueue job
+      const job = await jobService.enqueueVmDestroyJob(request.params.name);
+      
+      response.status(202).json({
         name: request.params.name,
-        destroyed,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -423,12 +489,32 @@ export function createApp(deps = defaultDependencies) {
       const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload);
-      const cloned = await deps.cloneVm(request.params.name, savedConfig.configPath);
+      
+      // Enqueue job for asynchronous cloning
+      if (!jobService) {
+        // Fallback to synchronous cloning if job service unavailable
+        const cloned = await deps.cloneVm(request.params.name, savedConfig.configPath);
 
-      response.status(201).json({
+        response.status(201).json({
+          sourceName: request.params.name,
+          ...savedConfig,
+          cloned,
+        });
+        return;
+      }
+      
+      // Enqueue job
+      const job = await jobService.enqueueVmCloneJob(
+        request.params.name,
+        savedConfig.config.vm.name,
+        savedConfig.configPath
+      );
+
+      response.status(202).json({
         sourceName: request.params.name,
         ...savedConfig,
-        cloned,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -449,11 +535,28 @@ export function createApp(deps = defaultDependencies) {
         { existingVmName: request.params.name },
       );
       const savedConfig = await deps.saveVmConfig(preparedPayload, { overwrite: true });
-      await deps.reconcileVmNetworking({ policyOnly: true });
-      response.json({
+      
+      // Enqueue job for asynchronous reconciliation
+      if (!jobService) {
+        // Fallback to synchronous reconciliation if job service unavailable
+        await deps.reconcileVmNetworking({ policyOnly: true });
+        response.json({
+          vmName: request.params.name,
+          configPath: savedConfig.configPath,
+          config: savedConfig.config,
+        });
+        return;
+      }
+      
+      // Enqueue job
+      const job = await jobService.enqueueVmReconcileJob({ policyOnly: true });
+      
+      response.status(202).json({
         vmName: request.params.name,
         configPath: savedConfig.configPath,
         config: savedConfig.config,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -516,6 +619,66 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
       const lines = parseLines(request.query.lines, 100);
       await deps.streamVmLog(request.params.name, response, lines);
+    }),
+  );
+
+  app.get(
+    '/api/jobs/:id',
+    asyncRoute(async (request, response) => {
+      if (!jobService) {
+        const error = new Error('Job queue is not available. Database connection required.');
+        error.statusCode = 503;
+        throw error;
+      }
+      
+      const jobId = Number.parseInt(request.params.id, 10);
+      if (Number.isNaN(jobId)) {
+        const error = new Error('Job ID must be a valid number');
+        error.statusCode = 400;
+        throw error;
+      }
+      
+      const job = await jobService.getJobById(jobId);
+      
+      if (!job) {
+        const error = new Error(`Job not found: ${jobId}`);
+        error.statusCode = 404;
+        throw error;
+      }
+      
+      response.json({ job });
+    }),
+  );
+
+  app.get(
+    '/api/jobs/:id/events',
+    asyncRoute(async (request, response) => {
+      if (!jobService) {
+        const error = new Error('Job queue is not available. Database connection required.');
+        error.statusCode = 503;
+        throw error;
+      }
+      
+      const jobId = Number.parseInt(request.params.id, 10);
+      if (Number.isNaN(jobId)) {
+        const error = new Error('Job ID must be a valid number');
+        error.statusCode = 400;
+        throw error;
+      }
+      
+      const limit = request.query.limit
+        ? Number.parseInt(request.query.limit, 10)
+        : 100;
+      
+      if (Number.isNaN(limit) || limit < 1 || limit > 1000) {
+        const error = new Error('limit must be an integer between 1 and 1000');
+        error.statusCode = 400;
+        throw error;
+      }
+      
+      const events = await jobService.getJobEvents(jobId, limit);
+      
+      response.json({ events });
     }),
   );
 
