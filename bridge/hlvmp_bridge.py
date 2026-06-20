@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """JSON bridge between the Express API and ``homelab_vm_provisioner``.
 
-This script loads the nested Python provisioner checkout, exposes a small CLI
+This script loads the Python provisioner checkout, exposes a small CLI
 surface for VM lifecycle and inspection operations, and always emits JSON so
 the Node layer can map results and failures into HTTP responses.
 """
@@ -18,7 +18,14 @@ from pathlib import Path
 
 
 API_ROOT = Path(__file__).resolve().parent.parent
-PROVISIONER_ROOT = API_ROOT / "homelab-vm-provisioner-cli"
+WORKSPACE_ROOT = API_ROOT.parent
+PROVISIONER_ROOT = Path(
+    __import__("os").environ.get("PROVISIONER_CLI_PATH")
+    or WORKSPACE_ROOT / "homelab-vm-provisioner-cli"
+)
+
+if not PROVISIONER_ROOT.is_absolute():
+    PROVISIONER_ROOT = WORKSPACE_ROOT / PROVISIONER_ROOT
 
 if str(PROVISIONER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVISIONER_ROOT))
@@ -82,7 +89,7 @@ def capture_action(action, *args, **kwargs):
     """Capture stdout produced by a provisioner callable.
 
     Args:
-        action: Callable imported from the nested provisioner.
+        action: Callable imported from the provisioner.
         *args: Positional arguments passed to ``action``.
 
     Returns:
@@ -248,7 +255,7 @@ def handle_create(config_path):
         config_path: Path to the YAML config file passed to the provisioner.
 
     Raises:
-        Exception: Propagates nested provisioner errors.
+        Exception: Propagates provisioner errors.
         SystemExit: Raised by :func:`emit` after printing the JSON response.
     """
 
@@ -263,7 +270,7 @@ def handle_destroy(vm_name):
         vm_name: Name of the VM to destroy.
 
     Raises:
-        Exception: Propagates nested provisioner errors.
+        Exception: Propagates provisioner errors.
         SystemExit: Raised by :func:`emit` after printing the JSON response.
     """
 

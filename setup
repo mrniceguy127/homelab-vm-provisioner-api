@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROVISIONER_DIR="$SCRIPT_DIR/homelab-vm-provisioner-cli"
+PROVISIONER_CLI_PATH="${PROVISIONER_CLI_PATH:-homelab-vm-provisioner-cli}"
+if [[ "$PROVISIONER_CLI_PATH" != /* ]]; then
+    PROVISIONER_DIR="$WORKSPACE_ROOT/$PROVISIONER_CLI_PATH"
+else
+    PROVISIONER_DIR="$PROVISIONER_CLI_PATH"
+fi
+
+cd "$SCRIPT_DIR"
 
 # Source component .env (parent vars inherited through execution sequence)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -31,7 +38,7 @@ for arg in "$@"; do
         --help)
             echo "Usage: $0 [OPTIONS] [PROVISIONER_OPTIONS]"
             echo ""
-            echo "Setup the API and nested Python provisioner environment."
+            echo "Setup the API and provisioner environment."
             echo ""
             echo "Options:"
             echo "  --skip-npm               Skip npm install"
@@ -60,6 +67,32 @@ run_sudo() {
     else
         sudo "$@"
     fi
+}
+
+ensure_sudo_credentials() {
+    local reason="$1"
+
+    if [[ "${EUID}" -eq 0 ]]; then
+        return
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        printf 'sudo is required for this setup step but is not installed.\n' >&2
+        exit 1
+    fi
+
+    if sudo -n -v >/dev/null 2>&1; then
+        return
+    fi
+
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        printf '%s\n' "$reason" >&2
+        printf 'Run this script from an interactive terminal or pre-authorize sudo with `sudo -v` first.\n' >&2
+        exit 1
+    fi
+
+    log "$reason"
+    sudo -v
 }
 
 require_cmd() {
@@ -193,6 +226,7 @@ install_system_packages() {
 
 # Install system packages if not skipped
 if [[ "$SKIP_SYSTEM_PACKAGES" == "false" ]]; then
+    ensure_sudo_credentials "Installing API system packages requires sudo access. Confirm it now before package installation begins."
     install_system_packages
 fi
 
@@ -223,7 +257,7 @@ fi
 
 mkdir -p "$(dirname "$PROVISIONER_VENV_DIR")"
 
-log "Running nested Python provisioner setup"
+log "Running Python provisioner setup"
 "$PROVISIONER_DIR/setup" "${PROVISIONER_ARGS[@]}" --venv "$PROVISIONER_VENV_DIR"
 
 if [[ "$SKIP_NPM" == "false" ]]; then

@@ -10,7 +10,9 @@ import {
   legacyRuntimeRoot,
   legacyUserKeyRoot,
   legacyVmDataRoot,
+  provisionerDataRoot,
   provisionerRoot,
+  scriptRoot,
   userKeyRoot,
   vmDataRoot,
 } from './config-store.js';
@@ -184,7 +186,20 @@ async function normalizeMigratedConfig(configPath) {
   if (config?.vm?.ssh_key_file && path.isAbsolute(config.vm.ssh_key_file)) {
     const absoluteKeyPath = path.resolve(config.vm.ssh_key_file);
     if (pathIsInside(absoluteKeyPath, legacyUserKeyRoot)) {
-      config.vm.ssh_key_file = path.join(userKeyRoot, path.basename(absoluteKeyPath));
+      config.vm.ssh_key_file = path.join('vm', 'keys', 'users', path.basename(absoluteKeyPath));
+    } else if (pathIsInside(absoluteKeyPath, userKeyRoot)) {
+      config.vm.ssh_key_file = path.relative(provisionerDataRoot, absoluteKeyPath);
+    } else if (pathIsInside(absoluteKeyPath, path.join(provisionerRoot, 'vm', 'keys', 'users'))) {
+      config.vm.ssh_key_file = path.join('vm', 'keys', 'users', path.basename(absoluteKeyPath));
+    }
+  }
+
+  if (config?.scripts?.setup_script_file && path.isAbsolute(config.scripts.setup_script_file)) {
+    const absoluteScriptPath = path.resolve(config.scripts.setup_script_file);
+    if (pathIsInside(absoluteScriptPath, scriptRoot)) {
+      config.scripts.setup_script_file = path.relative(provisionerDataRoot, absoluteScriptPath);
+    } else if (pathIsInside(absoluteScriptPath, path.join(provisionerRoot, 'vm', 'scripts'))) {
+      config.scripts.setup_script_file = path.join('vm', 'scripts', path.basename(absoluteScriptPath));
     }
   }
 
@@ -197,6 +212,10 @@ async function normalizeMigratedConfig(configPath) {
 
   if (vmName && (!config.paths || Object.keys(config.paths).length === 0)) {
     delete config.paths;
+  }
+
+  if (config.scripts && Object.keys(config.scripts).length === 0) {
+    delete config.scripts;
   }
 
   await fs.writeFile(configPath, yaml.dump(config, { lineWidth: -1 }), 'utf8');
@@ -212,7 +231,32 @@ async function migrateLegacyRuntimeData() {
     fs.mkdir(configRoot, { recursive: true }),
     fs.mkdir(userKeyRoot, { recursive: true }),
     fs.mkdir(vmDataRoot, { recursive: true }),
+    fs.mkdir(path.join(provisionerDataRoot, 'vm'), { recursive: true }),
   ]);
+
+  const legacyProvisionerConfigRoot = path.join(provisionerRoot, 'configs');
+  if (legacyProvisionerConfigRoot !== configRoot) {
+    const oldConfigEntries = await listDirectoryEntries(legacyProvisionerConfigRoot);
+    for (const entry of oldConfigEntries) {
+      const sourcePath = path.join(legacyProvisionerConfigRoot, entry.name);
+      const targetPath = path.join(configRoot, entry.name);
+      await moveEntryIfMissing(sourcePath, targetPath);
+      if (await pathExistsErrorTolerant(targetPath) && entry.isFile()) {
+        await normalizeMigratedConfig(targetPath);
+      }
+    }
+  }
+
+  const legacyProvisionerVmRoot = path.join(provisionerRoot, 'vm');
+  const currentProvisionerVmRoot = path.join(provisionerDataRoot, 'vm');
+  if (legacyProvisionerVmRoot !== currentProvisionerVmRoot) {
+    const oldVmEntries = await listDirectoryEntries(legacyProvisionerVmRoot);
+    for (const entry of oldVmEntries) {
+      const sourcePath = path.join(legacyProvisionerVmRoot, entry.name);
+      const targetPath = path.join(currentProvisionerVmRoot, entry.name);
+      await moveEntryIfMissing(sourcePath, targetPath);
+    }
+  }
 
   const legacyConfigEntries = await listDirectoryEntries(legacyConfigRoot);
   for (const entry of legacyConfigEntries) {
@@ -251,6 +295,7 @@ async function migrateLegacyRuntimeData() {
 async function repairOwnership() {
   const ownershipTargets = [
     legacyRuntimeRoot,
+    provisionerDataRoot,
     path.join(provisionerRoot, 'configs'),
     path.join(provisionerRoot, 'vm'),
   ];

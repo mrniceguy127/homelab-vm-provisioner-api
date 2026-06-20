@@ -10,9 +10,39 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set +a
 fi
 
+DOCKER_MODE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --docker)
+            DOCKER_MODE=true
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Build API artifacts."
+            echo ""
+            echo "Options:"
+            echo "  --docker    Build Docker image"
+            echo "  --help      Show this help message"
+            echo ""
+            echo "Default: Build API documentation"
+            exit 0
+            ;;
+    esac
+done
+
 log() {
     printf '==> %s\n' "$*"
 }
+
+if [[ "$DOCKER_MODE" == "true" ]]; then
+    log "Building API Docker image"
+    docker build -t homelab-vm-provisioner-api "$SCRIPT_DIR"
+    log "API Docker image built successfully"
+    log "Image: homelab-vm-provisioner-api:latest"
+    exit 0
+fi
 
 log "Building API documentation"
 npm --prefix "$SCRIPT_DIR" run build

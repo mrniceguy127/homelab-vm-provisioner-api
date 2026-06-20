@@ -6,7 +6,7 @@ import yaml from 'js-yaml';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 async function loadNetworkModel(tempProvisionerRoot) {
-  process.env.HLVMP_PROVISIONER_DIR = tempProvisionerRoot;
+  process.env.PROVISIONER_CLI_PATH = tempProvisionerRoot;
   vi.resetModules();
   return import('../src/network-model.js');
 }
@@ -18,7 +18,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  delete process.env.HLVMP_PROVISIONER_DIR;
+  delete process.env.PROVISIONER_CLI_PATH;
   vi.resetModules();
   if (tempRoot) {
     await fs.rm(tempRoot, { recursive: true, force: true });
@@ -88,8 +88,8 @@ test('prepareVmConfigForSave assigns a VM IP inside the selected network-group s
 });
 
 test('initializeNetworkModel migrates legacy single-admin VM state into owner and network-group metadata', async () => {
-  const configRoot = path.join(tempRoot, 'configs');
-  const stateRoot = path.join(tempRoot, 'vm', 'state');
+  const configRoot = path.join(tempRoot, 'data', 'configs');
+  const stateRoot = path.join(tempRoot, 'data', 'vm', 'state');
   await fs.mkdir(configRoot, { recursive: true });
   await fs.mkdir(stateRoot, { recursive: true });
 

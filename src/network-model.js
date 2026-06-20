@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import yaml from 'js-yaml';
 
-import { configRoot, ensureRuntimeDirectories, provisionerRoot } from './config-store.js';
+import { configRoot, ensureRuntimeDirectories, provisionerDataRoot, provisionerRoot } from './config-store.js';
 
 export const NETWORK_PROFILES = ['private', 'nat', 'isolated_nat', 'bridged'];
 export const DEFAULT_NETWORK_POOL_CIDR = process.env.HLVMP_NETWORK_POOL_CIDR || '10.80.0.0/16';
@@ -15,10 +15,10 @@ export const DEFAULT_NETWORK_GROUP_PREFIX_LENGTH = Number.parseInt(
 export const DEFAULT_ADMIN_USER_ID = 'user-admin';
 export const DEFAULT_ADMIN_USERNAME = process.env.HLVMP_DEFAULT_ADMIN_USERNAME || 'admin';
 
-export const metadataRoot = path.join(provisionerRoot, 'vm', 'metadata');
+export const metadataRoot = path.join(provisionerDataRoot, 'vm', 'metadata');
 export const usersStorePath = path.join(metadataRoot, 'users.json');
 export const networkGroupsStorePath = path.join(metadataRoot, 'network-groups.json');
-export const stateRoot = path.join(provisionerRoot, 'vm', 'state');
+export const stateRoot = path.join(provisionerDataRoot, 'vm', 'state');
 export const legacyStateRoot = path.join(provisionerRoot, '.build');
 
 /**

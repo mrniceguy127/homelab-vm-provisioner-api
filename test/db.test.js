@@ -8,7 +8,7 @@ import {
 
 describe('database client', () => {
   let mockFetch;
-  const testUrl = 'http://localhost:3002'; // Use default URL since it's cached at module load
+  const testUrl = 'http://172.17.0.1:3002'; // Use default URL since it's cached at module load
   
   beforeEach(async () => {
     // Reset global repository

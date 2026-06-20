@@ -4,6 +4,7 @@ import { initializeNetworkModel } from './network-model.js';
 import { initializePrivilegeSupport } from './privileges.js';
 
 const port = Number.parseInt(process.env.PORT || '3001', 10);
+const disablePrivilegeSupport = process.env.HLVMP_DISABLE_PRIVILEGES === 'true';
 
 /**
  * Initialize privileged startup state and begin listening for HTTP traffic.
@@ -11,7 +12,9 @@ const port = Number.parseInt(process.env.PORT || '3001', 10);
  * @returns {Promise<void>} Resolves after the server is listening.
  */
 async function main() {
-  await initializePrivilegeSupport();
+  if (!disablePrivilegeSupport) {
+    await initializePrivilegeSupport();
+  }
   await initializeNetworkModel();
   
   // Initialize database connection (optional, will warn if DATABASE_URL not set)

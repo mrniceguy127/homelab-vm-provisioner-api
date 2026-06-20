@@ -8,15 +8,55 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const apiRoot = path.resolve(__dirname, '..');
-export const provisionerRoot = process.env.HLVMP_PROVISIONER_DIR || path.join(apiRoot, 'homelab-vm-provisioner-cli');
+export const workspaceRoot = path.resolve(apiRoot, '..');
+
+function resolveProvisionerRoot() {
+  const configuredRoot = process.env.PROVISIONER_CLI_PATH;
+  if (!configuredRoot) {
+    return path.join(workspaceRoot, 'homelab-vm-provisioner-cli');
+  }
+
+  return path.isAbsolute(configuredRoot)
+    ? configuredRoot
+    : path.join(workspaceRoot, configuredRoot);
+}
+
+export const provisionerRoot = resolveProvisionerRoot();
+export const provisionerDataRoot = path.isAbsolute(process.env.PROVISIONER_DATA_DIR || '')
+  ? path.resolve(process.env.PROVISIONER_DATA_DIR)
+  : path.join(provisionerRoot, process.env.PROVISIONER_DATA_DIR || 'data');
 export const legacyRuntimeRoot = process.env.HLVMP_API_RUNTIME_DIR || path.join(apiRoot, 'runtime');
 export const legacyConfigRoot = path.join(legacyRuntimeRoot, 'configs');
 export const legacyUserKeyRoot = path.join(legacyRuntimeRoot, 'keys', 'users');
 export const legacyVmDataRoot = path.join(legacyRuntimeRoot, 'vm-data');
-export const configRoot = path.join(provisionerRoot, 'configs');
-export const userKeyRoot = path.join(provisionerRoot, 'vm', 'keys', 'users');
-export const vmDataRoot = path.join(provisionerRoot, 'vm', 'data');
-export const scriptRoot = path.join(provisionerRoot, 'vm', 'scripts');
+export const configRoot = path.join(provisionerDataRoot, 'configs');
+export const userKeyRoot = path.join(provisionerDataRoot, 'vm', 'keys', 'users');
+export const vmDataRoot = path.join(provisionerDataRoot, 'vm', 'data');
+export const scriptRoot = path.join(provisionerDataRoot, 'vm', 'scripts');
+
+function toProvisionerRelativePath(filePath) {
+  return path.relative(provisionerDataRoot, filePath);
+}
+
+function normalizeStoredPath(filePath) {
+  if (!path.isAbsolute(filePath)) {
+    return filePath;
+  }
+
+  const resolvedPath = path.resolve(filePath);
+  const relativePath = path.relative(provisionerDataRoot, resolvedPath);
+  if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
+    return relativePath;
+  }
+
+  const legacyVmRoot = path.join(provisionerRoot, 'vm');
+  const legacyVmRelativePath = path.relative(legacyVmRoot, resolvedPath);
+  if (!legacyVmRelativePath.startsWith('..') && !path.isAbsolute(legacyVmRelativePath)) {
+    return path.join('vm', legacyVmRelativePath);
+  }
+
+  return resolvedPath;
+}
 
 /**
  * Create an HTTP 422 validation error.
@@ -166,16 +206,15 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
     const keyFileName = sanitizeFileName(requestedKeyFile, `${vmName}.pub`);
     keyPath = path.join(userKeyRoot, keyFileName);
     await fs.writeFile(keyPath, `${sshPublicKey.trim()}\n`, 'utf8');
-    effectiveConfig.vm.ssh_key_file = keyPath;
+    effectiveConfig.vm.ssh_key_file = toProvisionerRelativePath(keyPath);
   } else if (effectiveConfig.vm.ssh_key_file) {
-    if (!path.isAbsolute(effectiveConfig.vm.ssh_key_file)) {
-      throw createValidationError(
-        'config.vm.ssh_key_file must be an absolute path when sshPublicKey is not provided',
-      );
-    }
+    effectiveConfig.vm.ssh_key_file = normalizeStoredPath(effectiveConfig.vm.ssh_key_file);
+    const resolvedKeyPath = path.isAbsolute(effectiveConfig.vm.ssh_key_file)
+      ? effectiveConfig.vm.ssh_key_file
+      : path.resolve(provisionerDataRoot, effectiveConfig.vm.ssh_key_file);
 
     try {
-      await fs.access(effectiveConfig.vm.ssh_key_file);
+      await fs.access(resolvedKeyPath);
     } catch {
       throw createValidationError(
         `Referenced SSH public key was not found: ${effectiveConfig.vm.ssh_key_file}`,
@@ -191,17 +230,18 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
     await fs.writeFile(scriptPath, `${setupScript.trim()}\n`, 'utf8');
     effectiveConfig.scripts = {
       ...(effectiveConfig.scripts || {}),
-      setup_script_file: scriptPath,
+      setup_script_file: toProvisionerRelativePath(scriptPath),
     };
   } else if (effectiveConfig.scripts?.setup_script_file) {
-    if (!path.isAbsolute(effectiveConfig.scripts.setup_script_file)) {
-      throw createValidationError(
-        'config.scripts.setup_script_file must be an absolute path when setupScript is not provided',
-      );
-    }
+    effectiveConfig.scripts.setup_script_file = normalizeStoredPath(
+      effectiveConfig.scripts.setup_script_file,
+    );
+    const resolvedScriptPath = path.isAbsolute(effectiveConfig.scripts.setup_script_file)
+      ? effectiveConfig.scripts.setup_script_file
+      : path.resolve(provisionerDataRoot, effectiveConfig.scripts.setup_script_file);
 
     try {
-      await fs.access(effectiveConfig.scripts.setup_script_file);
+      await fs.access(resolvedScriptPath);
     } catch {
       throw createValidationError(
         `Referenced setup script was not found: ${effectiveConfig.scripts.setup_script_file}`,

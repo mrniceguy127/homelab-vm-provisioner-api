@@ -1,3 +1,0 @@
-[submodule "homelab-vm-provisioner-cli"]
-	path = homelab-vm-provisioner-cli
-	url = git@github.com:mrniceguy127/homelab-vm-provisioner-cli.git

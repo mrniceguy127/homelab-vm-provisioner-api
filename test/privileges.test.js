@@ -13,9 +13,11 @@ vi.mock('../src/config-store.js', () => ({
   legacyRuntimeRoot: '/test/legacy-runtime',
   legacyUserKeyRoot: '/test/legacy-keys',
   legacyVmDataRoot: '/test/legacy-vm-data',
+  provisionerDataRoot: '/test/provisioner/data',
   provisionerRoot: '/test/provisioner',
-  userKeyRoot: '/test/keys',
-  vmDataRoot: '/test/vm-data',
+  scriptRoot: '/test/provisioner/data/vm/scripts',
+  userKeyRoot: '/test/provisioner/data/vm/keys/users',
+  vmDataRoot: '/test/provisioner/data/vm/data',
 }));
 
 describe('privileges', () => {
@@ -174,8 +176,8 @@ describe('privileges', () => {
 
       expect(fs.rename).toHaveBeenCalled();
       expect(fs.mkdir).toHaveBeenCalledWith('/test/configs', { recursive: true });
-      expect(fs.mkdir).toHaveBeenCalledWith('/test/keys', { recursive: true });
-      expect(fs.mkdir).toHaveBeenCalledWith('/test/vm-data', { recursive: true });
+      expect(fs.mkdir).toHaveBeenCalledWith('/test/provisioner/data/vm/keys/users', { recursive: true });
+      expect(fs.mkdir).toHaveBeenCalledWith('/test/provisioner/data/vm/data', { recursive: true });
     });
 
     it('normalizes migrated config files', async () => {
@@ -220,6 +222,42 @@ network:
         const normalizedContent = writeCall[1];
         expect(normalizedContent).toContain('cidr');
       }
+    });
+
+    it('rewrites migrated managed key and script paths to provisioner-relative paths', async () => {
+      const mockChild = {
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        on: vi.fn((event, callback) => {
+          if (event === 'close') callback(0);
+        }),
+      };
+
+      spawn.mockReturnValue(mockChild);
+
+      fs.stat.mockResolvedValue({});
+      fs.mkdir.mockResolvedValue();
+      fs.readdir.mockImplementation((dirPath) => {
+        if (dirPath.includes('legacy-configs')) {
+          return Promise.resolve([
+            { name: 'vm1.yaml', isFile: () => true, isDirectory: () => false },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      fs.rename.mockResolvedValue();
+      fs.readFile.mockResolvedValue(
+        'vm:\n  name: test-vm\n  ssh_key_file: /test/provisioner/data/vm/keys/users/test-vm.pub\n'
+        + 'scripts:\n  setup_script_file: /test/provisioner/data/vm/scripts/test-vm-setup.sh\n',
+      );
+      fs.writeFile.mockResolvedValue();
+
+      await initializePrivilegeSupport();
+
+      const writeCall = fs.writeFile.mock.calls.find(call => call[0].includes('vm1.yaml'));
+      expect(writeCall[1]).toContain('ssh_key_file: vm/keys/users/test-vm.pub');
+      expect(writeCall[1]).toContain('setup_script_file: vm/scripts/test-vm-setup.sh');
     });
 
     it('skips ownership repair when no directories exist', async () => {

@@ -188,6 +188,7 @@ network:
         'utf8',
       );
       expect(result.keyPath).toContain('test-vm.pub');
+      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/test-vm.pub');
     });
 
     it('saves setup script when provided', async () => {
@@ -202,32 +203,99 @@ network:
         'utf8',
       );
       expect(result.scriptPath).toContain('test-vm-setup.sh');
+      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/test-vm-setup.sh');
     });
 
-    it('validates absolute path for existing SSH key file', async () => {
+    it('accepts relative path for existing SSH key file', async () => {
       const config = {
         vm: {
           name: 'test-vm',
-          ssh_key_file: 'relative/path.pub',
+          ssh_key_file: 'vm/keys/users/relative/path.pub',
+        },
+      };
+
+      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
+      fs.access.mockResolvedValueOnce();
+
+      const result = await saveVmConfig({ config });
+
+      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/relative/path.pub');
+      expect(fs.access).toHaveBeenCalled();
+    });
+
+    it('normalizes absolute managed SSH key path to relative storage', async () => {
+      const config = {
+        vm: {
+          name: 'test-vm',
+          ssh_key_file: `${provisionerRoot}/vm/keys/users/test-vm.pub`,
+        },
+      };
+
+      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
+      fs.access.mockResolvedValueOnce();
+
+      const result = await saveVmConfig({ config });
+
+      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/test-vm.pub');
+    });
+
+    it('validates missing existing SSH key file', async () => {
+      const config = {
+        vm: {
+          name: 'test-vm',
+          ssh_key_file: 'vm/keys/users/missing.pub',
         },
       };
 
       await expect(saveVmConfig({ config })).rejects.toMatchObject({
-        message: expect.stringContaining('absolute path'),
+        message: expect.stringContaining('Referenced SSH public key was not found'),
         statusCode: 422,
       });
     });
 
-    it('validates absolute path for existing setup script', async () => {
+    it('accepts relative path for existing setup script', async () => {
       const config = {
         vm: { name: 'test-vm' },
         scripts: {
-          setup_script_file: 'relative/script.sh',
+          setup_script_file: 'vm/scripts/relative/script.sh',
+        },
+      };
+
+      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
+      fs.access.mockResolvedValueOnce();
+
+      const result = await saveVmConfig({ config });
+
+      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/relative/script.sh');
+      expect(fs.access).toHaveBeenCalled();
+    });
+
+    it('normalizes absolute managed setup script path to relative storage', async () => {
+      const config = {
+        vm: { name: 'test-vm' },
+        scripts: {
+          setup_script_file: `${provisionerRoot}/vm/scripts/test-vm-setup.sh`,
+        },
+      };
+
+      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
+      fs.access.mockResolvedValueOnce();
+
+      const result = await saveVmConfig({ config });
+
+      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/test-vm-setup.sh');
+    });
+
+    it('validates missing existing setup script', async () => {
+      const config = {
+        vm: { name: 'test-vm' },
+        scripts: {
+          setup_script_file: 'vm/scripts/missing.sh',
         },
       };
 
       await expect(saveVmConfig({ config })).rejects.toMatchObject({
-        message: expect.stringContaining('absolute path'),
+        message: expect.stringContaining('Referenced setup script was not found'),
         statusCode: 422,
       });
     });

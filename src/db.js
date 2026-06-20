@@ -5,7 +5,7 @@
  * instead of directly accessing PostgreSQL.
  */
 
-const DB_SERVICE_URL = process.env.DB_SERVICE_URL || 'http://localhost:3002';
+const DB_SERVICE_URL = process.env.DB_SERVICE_URL || 'http://172.17.0.1:3002';
 const DB_SERVICE_PASSWORD = process.env.DB_SERVICE_PASSWORD || 'changeme_db_secret';
 
 /**

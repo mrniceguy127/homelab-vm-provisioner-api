@@ -2,7 +2,7 @@
 
 Express API for the `homelab-vm-provisioner-cli` Python module.
 
-This service stores VM configs, validates requests, calls the nested Python provisioner, exposes VM inventory/details endpoints, and provides both snapshot and streaming log access.
+This service stores VM configs, validates requests, calls the Python provisioner, exposes VM inventory/details endpoints, and provides both snapshot and streaming log access.
 
 When this repository is checked out as part of the full `homelab-vm-provisioner` workspace, prefer the workspace root `setup`, `build`, and `start` scripts for end-to-end setup and local runs.
 
@@ -13,17 +13,17 @@ When this repository is checked out as part of the full `homelab-vm-provisioner`
 - `src/config-store.js`: Stores API-managed YAML configs and SSH public keys.
 - `src/network-model.js`: Persists tenant/network-group metadata, allocates `/28` subnets, and enriches saved VM configs with stable owner/network identity.
 - `src/provisioner.js`: Spawns the Python bridge and handles log reads/streams.
-- `bridge/hlvmp_bridge.py`: JSON bridge into the nested `homelab-vm-provisioner-cli` repo.
-- `homelab-vm-provisioner-cli/`: Git submodule containing the real Python VM provisioner.
+- `bridge/hlvmp_bridge.py`: JSON bridge into the workspace `homelab-vm-provisioner-cli` repo.
+- `../homelab-vm-provisioner-cli/`: Git submodule containing the real Python VM provisioner.
 
 ## Requirements
 
 - Node.js 18+
 - Python 3
-- Nested Python provisioner dependencies installed
+- Python provisioner dependencies installed
 - A libvirt host environment if you want real VM lifecycle operations to succeed
 
-The nested provisioner is the source of truth for actual VM creation, destruction, state inspection, and libvirt integration.
+The provisioner repo is the source of truth for actual VM creation, destruction, state inspection, and libvirt integration.
 
 ## Install
 
@@ -61,10 +61,10 @@ For a rebuild after dependencies are already installed, just run `./build`.
 npm install
 ```
 
-2. Install the nested Python provisioner dependencies:
+2. Install the Python provisioner dependencies:
 
 ```bash
-python3 -m pip install -e ./homelab-vm-provisioner-cli
+python3 -m pip install -e ../homelab-vm-provisioner-cli
 ```
 
 3. Start the API:
@@ -81,7 +81,7 @@ Or from the workspace root:
 
 The API must be started as your normal user, not as `root`.
 
-At startup it securely runs `sudo -v` so later `virsh`/libvirt commands can use `sudo` only where needed. During the same startup preflight it also repairs ownership under the legacy API runtime directory plus the nested provisioner `configs/` and `vm/` directories so future config/state files stay user-owned.
+At startup it securely runs `sudo -v` so later `virsh`/libvirt commands can use `sudo` only where needed. During the same startup preflight it also repairs ownership under the legacy API runtime directory plus the provisioner `configs/` and `vm/` directories so future config/state files stay user-owned.
 
 Default port: `3001`
 
@@ -90,7 +90,8 @@ Default port: `3001`
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3001` | Express listen port |
-| `HLVMP_PROVISIONER_DIR` | `./homelab-vm-provisioner-cli` | Path to the nested Python provisioner checkout |
+| `PROVISIONER_CLI_PATH` | `../homelab-vm-provisioner-cli` | Path to the Python provisioner checkout |
+| `PROVISIONER_DATA_DIR` | `data` | Provisioner data root resolved relative to the provisioner checkout |
 | `HLVMP_API_RUNTIME_DIR` | `./runtime` | Legacy migration source for older API-managed config, key, and VM data files |
 | `HLVMP_NETWORK_POOL_CIDR` | `10.80.0.0/16` | Global private pool used for managed network-group subnet allocation |
 | `HLVMP_NETWORK_GROUP_PREFIX_LENGTH` | `28` | Prefix length assigned to each new network group |
@@ -98,23 +99,23 @@ Default port: `3001`
 
 ## Provisioner Paths
 
-The API now uses the nested Python provisioner's default directories instead of the old API-local `runtime/` folder:
+The API now uses the provisioner repo's default directories instead of the old API-local `runtime/` folder:
 
-- `homelab-vm-provisioner-cli/configs/<vm>.yaml`: Saved YAML config per VM
-- `homelab-vm-provisioner-cli/vm/metadata/users.json`: Persisted tenant/user records
-- `homelab-vm-provisioner-cli/vm/metadata/network-groups.json`: Persisted network-group records and subnet allocations
-- `homelab-vm-provisioner-cli/vm/keys/users/<file>.pub`: Uploaded tenant SSH public keys
-- `homelab-vm-provisioner-cli/vm/scripts/<file>.sh`: Uploaded post-cloud-init setup scripts
-- `homelab-vm-provisioner-cli/vm/data/<vm>/`: Default per-VM rendered data directory
+- `../homelab-vm-provisioner-cli/data/configs/<vm>.yaml`: Saved YAML config per VM
+- `../homelab-vm-provisioner-cli/data/vm/metadata/users.json`: Persisted tenant/user records
+- `../homelab-vm-provisioner-cli/data/vm/metadata/network-groups.json`: Persisted network-group records and subnet allocations
+- `../homelab-vm-provisioner-cli/data/vm/keys/users/<file>.pub`: Uploaded tenant SSH public keys
+- `../homelab-vm-provisioner-cli/data/vm/scripts/<file>.sh`: Uploaded post-cloud-init setup scripts
+- `../homelab-vm-provisioner-cli/data/vm/data/<vm>/`: Default per-VM rendered data directory
 - `public/`: Built client files served by the API
 
-If `sshPublicKey` is present in a create request, the API writes the public key to `homelab-vm-provisioner-cli/vm/keys/users/` and rewrites `config.vm.ssh_key_file` to the resulting absolute path before saving the YAML file.
+If `sshPublicKey` is present in a create request, the API writes the public key to `../homelab-vm-provisioner-cli/data/vm/keys/users/` and rewrites `config.vm.ssh_key_file` to a provisioner-data-relative path before saving the YAML file.
 
-If `sshPublicKey` is omitted but `config.vm.ssh_key_file` is present, that path must already be absolute and readable on disk.
+If `sshPublicKey` is omitted but `config.vm.ssh_key_file` is present, it may be provisioner-data-relative or absolute, and must resolve to a readable file.
 
-If `setupScript` is present in a create request, the API writes the script to `homelab-vm-provisioner-cli/vm/scripts/` and rewrites `config.scripts.setup_script_file` to the resulting absolute path before saving the YAML file.
+If `setupScript` is present in a create request, the API writes the script to `../homelab-vm-provisioner-cli/data/vm/scripts/` and rewrites `config.scripts.setup_script_file` to a provisioner-data-relative path before saving the YAML file.
 
-If `setupScript` is omitted but `config.scripts.setup_script_file` is present, that path must already be absolute and readable on disk.
+If `setupScript` is omitted but `config.scripts.setup_script_file` is present, it may be provisioner-data-relative or absolute, and must resolve to a readable file.
 
 Legacy files under `runtime/` are migrated into these provisioner-default directories during API startup.
 
@@ -777,6 +778,6 @@ Response `422`:
 ## Notes
 
 - This API does not implement authentication yet.
-- VM lifecycle behavior depends on the nested Python provisioner and the host tools it requires.
+- VM lifecycle behavior depends on the Python provisioner and the host tools it requires.
 - `GET /api/vms/:name/logs` and `GET /api/vms/:name/logs/stream` read host-side libvirt QEMU logs directly.
 - The bridge emits structured JSON on both success and failure so the Node layer can convert provisioner failures into HTTP responses.
