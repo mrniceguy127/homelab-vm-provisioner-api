@@ -21,7 +21,7 @@ test('enqueueVmProvisionJob enqueues a provision job with correct parameters', a
     status: 'queued',
     target_host_id: 'host-1',
     target_vm_id: 'test-vm',
-    payload: { configPath: '/configs/test-vm.yaml' },
+    payload: { vmName: 'test-vm' },
     created_at: new Date(),
   };
   
@@ -32,12 +32,12 @@ test('enqueueVmProvisionJob enqueues a provision job with correct parameters', a
     hostId: 'host-1',
   });
   
-  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  const result = await service.enqueueVmProvisionJob('test-vm');
   
   expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
     'provision_vm',
     'host-1',
-    { configPath: '/configs/test-vm.yaml' },
+    { vmName: 'test-vm' },
     { targetVmId: 'test-vm', maxAttempts: 3 }
   );
   
@@ -83,7 +83,7 @@ test('enqueueVmCloneJob enqueues a clone job with correct parameters', async () 
     status: 'queued',
     target_host_id: 'host-1',
     target_vm_id: 'new-vm',
-    payload: { sourceVmName: 'source-vm', configPath: '/configs/new-vm.yaml' },
+    payload: { sourceVmName: 'source-vm', targetVmName: 'new-vm' },
     created_at: new Date(),
   };
   
@@ -94,12 +94,12 @@ test('enqueueVmCloneJob enqueues a clone job with correct parameters', async () 
     hostId: 'host-1',
   });
   
-  const result = await service.enqueueVmCloneJob('source-vm', 'new-vm', '/configs/new-vm.yaml');
+  const result = await service.enqueueVmCloneJob('source-vm', 'new-vm');
   
   expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
     'clone_vm',
     'host-1',
-    { sourceVmName: 'source-vm', configPath: '/configs/new-vm.yaml' },
+    { sourceVmName: 'source-vm', targetVmName: 'new-vm' },
     { targetVmId: 'new-vm', maxAttempts: 3 }
   );
   
@@ -146,7 +146,7 @@ test('enqueueVmProvisionJob throws error when hostId is not configured', async (
   });
   
   await expect(
-    service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml')
+    service.enqueueVmProvisionJob('test-vm')
   ).rejects.toThrow('HOST_ID is not configured');
 });
 
@@ -158,7 +158,7 @@ test('getJobById retrieves a job by ID', async () => {
     status: 'running',
     target_host_id: 'host-1',
     target_vm_id: 'test-vm',
-    payload: { configPath: '/configs/test-vm.yaml' },
+    payload: { vmName: 'test-vm' },
     created_at: new Date(),
   };
   
@@ -229,7 +229,7 @@ test('enqueueVmProvisionJob attempts worker wakeup when socket configured', asyn
     status: 'queued',
     target_host_id: 'host-1',
     target_vm_id: 'test-vm',
-    payload: { configPath: '/configs/test-vm.yaml' },
+    payload: { vmName: 'test-vm' },
     created_at: new Date(),
   };
   
@@ -243,7 +243,7 @@ test('enqueueVmProvisionJob attempts worker wakeup when socket configured', asyn
     workerSocket: '/run/hlvmp/worker.sock',
   });
   
-  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  const result = await service.enqueueVmProvisionJob('test-vm');
   
   expect(result).toEqual(mockJob);
   expect(wakeWorkerSpy).toHaveBeenCalledWith('/run/hlvmp/worker.sock', expect.any(Object));
@@ -259,7 +259,7 @@ test('enqueueVmProvisionJob succeeds even if worker wakeup fails', async () => {
     status: 'queued',
     target_host_id: 'host-1',
     target_vm_id: 'test-vm',
-    payload: { configPath: '/configs/test-vm.yaml' },
+    payload: { vmName: 'test-vm' },
     created_at: new Date(),
   };
   
@@ -274,7 +274,7 @@ test('enqueueVmProvisionJob succeeds even if worker wakeup fails', async () => {
   });
   
   // Should still succeed even if wake fails
-  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  const result = await service.enqueueVmProvisionJob('test-vm');
   
   expect(result).toEqual(mockJob);
   expect(wakeWorkerSpy).toHaveBeenCalled();
@@ -290,7 +290,7 @@ test('enqueueVmProvisionJob does not attempt wakeup when socket not configured',
     status: 'queued',
     target_host_id: 'host-1',
     target_vm_id: 'test-vm',
-    payload: { configPath: '/configs/test-vm.yaml' },
+    payload: { vmName: 'test-vm' },
     created_at: new Date(),
   };
   
@@ -304,7 +304,7 @@ test('enqueueVmProvisionJob does not attempt wakeup when socket not configured',
     workerSocket: null,
   });
   
-  const result = await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  const result = await service.enqueueVmProvisionJob('test-vm');
   
   expect(result).toEqual(mockJob);
   // wakeWorker should not be called when socket is null
@@ -325,9 +325,9 @@ test('all enqueue methods attempt worker wakeup', async () => {
     workerSocket: '/run/hlvmp/worker.sock',
   });
   
-  await service.enqueueVmProvisionJob('test-vm', '/configs/test-vm.yaml');
+  await service.enqueueVmProvisionJob('test-vm');
   await service.enqueueVmDestroyJob('test-vm');
-  await service.enqueueVmCloneJob('source-vm', 'new-vm', '/configs/new-vm.yaml');
+  await service.enqueueVmCloneJob('source-vm', 'new-vm');
   await service.enqueueVmReconcileJob({ policyOnly: true });
   
   expect(wakeWorkerSpy).toHaveBeenCalledTimes(4);

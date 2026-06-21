@@ -23,13 +23,13 @@ function buildMockRepository() {
 
 function buildMockJobService() {
   return {
-    enqueueVmProvisionJob: vi.fn(async (vmName, configPath) => ({
+    enqueueVmProvisionJob: vi.fn(async (vmName) => ({
       id: 123,
       type: 'provision_vm',
       status: 'queued',
       target_host_id: 'test-host',
       target_vm_id: vmName,
-      payload: { configPath },
+      payload: { vmName },
       created_at: new Date(),
     })),
     enqueueVmDestroyJob: vi.fn(async (vmName) => ({
@@ -41,13 +41,13 @@ function buildMockJobService() {
       payload: { vmName },
       created_at: new Date(),
     })),
-    enqueueVmCloneJob: vi.fn(async (sourceVmName, targetVmName, configPath) => ({
+    enqueueVmCloneJob: vi.fn(async (sourceVmName, targetVmName) => ({
       id: 125,
       type: 'clone_vm',
       status: 'queued',
       target_host_id: 'test-host',
       target_vm_id: targetVmName,
-      payload: { sourceVmName, configPath },
+      payload: { sourceVmName, targetVmName },
       created_at: new Date(),
     })),
     enqueueVmReconcileJob: vi.fn(async (options) => ({
@@ -59,6 +59,11 @@ function buildMockJobService() {
       payload: options,
       created_at: new Date(),
     })),
+    enqueueVmStartJob: vi.fn(async (vmName) => ({ id: 127, type: 'start_vm', status: 'queued', target_vm_id: vmName, payload: { vmName }, created_at: new Date() })),
+    enqueueVmStopJob: vi.fn(async (vmName) => ({ id: 128, type: 'stop_vm', status: 'queued', target_vm_id: vmName, payload: { vmName }, created_at: new Date() })),
+    enqueueVmSnapshotCreateJob: vi.fn(async (vmName) => ({ id: 129, type: 'snapshot_create', status: 'queued', target_vm_id: vmName, payload: { vmName }, created_at: new Date() })),
+    enqueueVmSnapshotRestoreJob: vi.fn(async (vmName, snapshotId) => ({ id: 130, type: 'snapshot_restore', status: 'queued', target_vm_id: vmName, payload: { vmName, snapshotId }, created_at: new Date() })),
+    enqueueVmSnapshotDeleteJob: vi.fn(async (vmName, snapshotId) => ({ id: 131, type: 'snapshot_delete', status: 'queued', target_vm_id: vmName, payload: { vmName, snapshotId }, created_at: new Date() })),
     getJobById: vi.fn(),
     getJobEvents: vi.fn(),
   };
@@ -126,10 +131,22 @@ function buildDeps(overrides = {}) {
     }),
     saveVmConfig: async ({ config }) => ({
       vmName: config.vm.name,
-      configPath: `/configs/${config.vm.name}.yaml`,
+      vmDefinitionId: 42,
+      configPath: null,
       rawConfig: 'vm: {}',
       config,
     }),
+    upsertStoredVmDefinitionAndEnqueueJob: vi.fn(async (vmDefinition, jobType, _jobPayload, _jobOptions) => ({
+      vmDefinition: { id: 42, ...vmDefinition },
+      job: {
+        id: {
+          provision_vm: 123,
+          clone_vm: 125,
+          reconcile_vm_networking: 126,
+        }[jobType] || 123,
+        status: 'queued',
+      },
+    })),
     cloneVm: async (sourceVmName, configPath) => ({ success: true, source_name: sourceVmName, config_path: configPath }),
     createVm: async (configPath) => ({ success: true, config_path: configPath }),
     createVmSnapshot: async (vmName) => ({ success: true, name: vmName }),
@@ -159,6 +176,7 @@ function buildDeps(overrides = {}) {
     isValidationError,
     getRepository: () => mockRepository,
     isDatabaseAvailable: () => true,
+    loadStoredVmRuntimeState: async () => null,
     createJobService: () => mockJobService,
     ...overrides,
   };
@@ -192,14 +210,15 @@ test('POST /api/vms enqueues a provision job when jobService is available', asyn
   expect(response.status).toBe(202);
   expect(response.body).toMatchObject({
     vmName: 'async-vm',
-    configPath: '/configs/async-vm.yaml',
+    configPath: null,
     job_id: 123,
     status: 'queued',
   });
-  
-  expect(deps.createJobService().enqueueVmProvisionJob).toHaveBeenCalledWith(
-    'async-vm',
-    '/configs/async-vm.yaml'
+  expect(deps.upsertStoredVmDefinitionAndEnqueueJob).toHaveBeenCalledWith(
+    expect.objectContaining({ vm_name: 'async-vm' }),
+    'provision_vm',
+    { vmName: 'async-vm' },
+    expect.objectContaining({ targetVmId: 'async-vm' }),
   );
 });
 
@@ -207,6 +226,13 @@ test('POST /api/vms falls back to sync provisioning when jobService is unavailab
   const created = [];
   const deps = buildDeps({
     isDatabaseAvailable: () => false,
+    saveVmConfig: async ({ config }) => ({
+      vmName: config.vm.name,
+      vmDefinitionId: 42,
+      configPath: `/configs/${config.vm.name}.yaml`,
+      rawConfig: 'vm: {}',
+      config,
+    }),
     createVm: async (configPath) => {
       created.push(configPath);
       return { success: true, config_path: configPath };
@@ -245,8 +271,7 @@ test('POST /api/vms/:name/provision enqueues a provision job when jobService is 
   });
   
   expect(deps.createJobService().enqueueVmProvisionJob).toHaveBeenCalledWith(
-    'devbox',
-    '/configs/devbox.yaml'
+    'devbox'
   );
 });
 
@@ -278,15 +303,15 @@ test('POST /api/vms/:name/clone enqueues a clone job when jobService is availabl
   expect(response.body).toMatchObject({
     sourceName: 'devbox',
     vmName: 'clonebox',
-    configPath: '/configs/clonebox.yaml',
+    configPath: null,
     job_id: 125,
     status: 'queued',
   });
-  
-  expect(deps.createJobService().enqueueVmCloneJob).toHaveBeenCalledWith(
-    'devbox',
-    'clonebox',
-    '/configs/clonebox.yaml'
+  expect(deps.upsertStoredVmDefinitionAndEnqueueJob).toHaveBeenCalledWith(
+    expect.objectContaining({ vm_name: 'clonebox' }),
+    'clone_vm',
+    { sourceVmName: 'devbox', targetVmName: 'clonebox' },
+    expect.objectContaining({ targetVmId: 'clonebox' }),
   );
 });
 
@@ -297,7 +322,8 @@ test('PATCH /api/vms/:name/policy enqueues a reconcile job when jobService is av
       savedConfigs.push(config);
       return {
         vmName: config.vm.name,
-        configPath: `/configs/${config.vm.name}.yaml`,
+        vmDefinitionId: 42,
+        configPath: null,
         rawConfig: 'vm: {}',
         config,
       };
@@ -312,12 +338,16 @@ test('PATCH /api/vms/:name/policy enqueues a reconcile job when jobService is av
   expect(response.status).toBe(202);
   expect(response.body).toMatchObject({
     vmName: 'devbox',
-    configPath: '/configs/devbox.yaml',
+    configPath: null,
     job_id: 126,
     status: 'queued',
   });
-  
-  expect(deps.createJobService().enqueueVmReconcileJob).toHaveBeenCalledWith({ policyOnly: true });
+  expect(deps.upsertStoredVmDefinitionAndEnqueueJob).toHaveBeenCalledWith(
+    expect.objectContaining({ vm_name: 'devbox' }),
+    'reconcile_vm_networking',
+    { policyOnly: true },
+    expect.objectContaining({ targetVmId: null }),
+  );
 });
 
 test('GET /api/jobs/:id returns job details', async () => {

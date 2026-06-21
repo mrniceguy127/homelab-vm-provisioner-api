@@ -7,7 +7,12 @@ import {
   loadStoredConfig,
   saveVmConfig,
 } from './config-store.js';
-import { getRepository, isDatabaseAvailable } from './db.js';
+import {
+  getRepository,
+  isDatabaseAvailable,
+  loadStoredVmRuntimeState,
+  upsertStoredVmDefinitionAndEnqueueJob,
+} from './db.js';
 import { createJobService } from './job-service.js';
 import {
   createNetworkGroup,
@@ -68,6 +73,8 @@ const defaultDependencies = {
   isValidationError,
   getRepository,
   isDatabaseAvailable,
+  loadStoredVmRuntimeState,
+  upsertStoredVmDefinitionAndEnqueueJob,
   createJobService,
 };
 
@@ -132,6 +139,32 @@ export async function inspectConfiguredVm(deps, vmName) {
   const storedConfig = await deps.loadStoredConfig(vmName);
   const storedVm = storedConfig.config?.vm || {};
   const storedNetwork = storedConfig.config?.network || {};
+  const runtimeStateRecord = await deps.loadStoredVmRuntimeState(vmName);
+  const runtimeState = runtimeStateRecord?.state || null;
+
+  if (runtimeState) {
+    return {
+      name: vmName,
+      exists: runtimeState.status !== 'destroyed',
+      status: runtimeState.status || 'unknown',
+      owner_user_id: runtimeState.owner_user_id || storedVm.owner_user_id || null,
+      network_group_id: runtimeState.network_group_id || storedVm.network_group_id || null,
+      allow_same_group_traffic: storedVm.allow_same_group_traffic ?? true,
+      allow_host_access: storedVm.allow_host_access ?? true,
+      allow_private_lan_access: storedVm.allow_private_lan_access ?? false,
+      internet_access: storedVm.internet_access ?? true,
+      mac_address: runtimeState.mac_address || storedVm.mac_address || storedNetwork.mac || null,
+      ip_address: runtimeState.ip_address || storedVm.ip_address || storedNetwork.vm_ip || null,
+      network: Object.keys(runtimeState.network || {}).length > 0
+        ? runtimeState.network
+        : (Object.keys(storedNetwork).length > 0 ? storedNetwork : null),
+      ports: runtimeState.ports || storedConfig.config?.ports || [],
+      configured: true,
+      storedConfigPath: storedConfig.configPath,
+      storedConfig: storedConfig.config,
+      runtimeState,
+    };
+  }
 
   try {
     const vm = await deps.inspectVm(vmName);
@@ -292,7 +325,7 @@ export function createApp(deps = defaultDependencies) {
     asyncRoute(async (request, response) => {
       const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
-      const savedConfig = await deps.saveVmConfig(payload);
+      const savedConfig = await deps.saveVmConfig(payload, { persist: !jobService });
       
       // Enqueue job for asynchronous provisioning
       if (!jobService) {
@@ -317,13 +350,25 @@ export function createApp(deps = defaultDependencies) {
       }
       
       // Enqueue job
-      const job = await jobService.enqueueVmProvisionJob(
-        savedConfig.config.vm.name,
-        savedConfig.configPath
+      const persisted = await deps.upsertStoredVmDefinitionAndEnqueueJob(
+        {
+          vm_name: savedConfig.vmName,
+          owner_user_id: savedConfig.config.vm.owner_user_id || null,
+          network_group_id: savedConfig.config.vm.network_group_id || null,
+          target_host_id: hostId,
+          config: savedConfig.config,
+          ssh_public_key: payload.sshPublicKey ? `${payload.sshPublicKey.trim()}\n` : null,
+          setup_script: payload.setupScript ? `${payload.setupScript.trim()}\n` : null,
+        },
+        'provision_vm',
+        { vmName: savedConfig.vmName },
+        { targetVmId: savedConfig.vmName, maxAttempts: 3, targetHostId: hostId },
       );
+      const job = persisted.job;
       
       response.status(202).json({
         ...savedConfig,
+        vmDefinitionId: persisted.vmDefinition.id,
         job_id: job.id,
         status: job.status,
       });
@@ -363,10 +408,7 @@ export function createApp(deps = defaultDependencies) {
       }
       
       // Enqueue job
-      const job = await jobService.enqueueVmProvisionJob(
-        request.params.name,
-        storedConfig.configPath
-      );
+      const job = await jobService.enqueueVmProvisionJob(request.params.name);
       
       response.status(202).json({
         name: request.params.name,
@@ -392,35 +434,8 @@ export function createApp(deps = defaultDependencies) {
   app.get(
     '/api/vms/:name',
     asyncRoute(async (request, response) => {
-      const storedConfig = await requireStoredConfig(deps, request.params.name);
-      const vmResult = await deps.inspectVm(request.params.name).catch((error) => ({
-        name: request.params.name,
-        exists: false,
-        status: 'unknown',
-        provisionerError: error?.message || 'Unable to query provisioner state',
-      }));
-
-      response.json({
-        vm: {
-          ...vmResult,
-           owner_user_id: vmResult.owner_user_id || storedConfig.config?.vm?.owner_user_id || null,
-           network_group_id: vmResult.network_group_id || storedConfig.config?.vm?.network_group_id || null,
-           allow_same_group_traffic: vmResult.allow_same_group_traffic ?? storedConfig.config?.vm?.allow_same_group_traffic ?? true,
-           allow_host_access: vmResult.allow_host_access ?? storedConfig.config?.vm?.allow_host_access ?? true,
-           allow_private_lan_access: vmResult.allow_private_lan_access ?? storedConfig.config?.vm?.allow_private_lan_access ?? false,
-           internet_access: vmResult.internet_access ?? storedConfig.config?.vm?.internet_access ?? true,
-          mac_address: vmResult.mac_address || storedConfig.config?.vm?.mac_address || storedConfig.config?.network?.mac || null,
-          ip_address: vmResult.ip_address || storedConfig.config?.vm?.ip_address || storedConfig.config?.network?.vm_ip || null,
-          network: vmResult.network
-            ? { ...(storedConfig.config?.network || {}), ...vmResult.network }
-            : (storedConfig.config?.network || null),
-          ports: vmResult.ports?.length ? vmResult.ports : (storedConfig.config?.ports || []),
-          configured: true,
-          storedConfigPath: storedConfig.configPath,
-          storedConfig: storedConfig.config,
-          provisionerError: vmResult.provisionerError || null,
-        },
-      });
+      const vm = await inspectConfiguredVm(deps, request.params.name);
+      response.json({ vm });
     }),
   );
 
@@ -448,7 +463,6 @@ export function createApp(deps = defaultDependencies) {
         return;
       }
       
-      // Enqueue job
       const job = await jobService.enqueueVmDestroyJob(request.params.name);
       
       response.status(202).json({
@@ -463,10 +477,21 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/start',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const started = await deps.startVm(request.params.name);
-      response.json({
+
+      if (!jobService) {
+        const started = await deps.startVm(request.params.name);
+        response.json({
+          name: request.params.name,
+          started,
+        });
+        return;
+      }
+
+      const job = await jobService.enqueueVmStartJob(request.params.name);
+      response.status(202).json({
         name: request.params.name,
-        started,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -475,10 +500,21 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/stop',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const stopped = await deps.stopVm(request.params.name);
-      response.json({
+
+      if (!jobService) {
+        const stopped = await deps.stopVm(request.params.name);
+        response.json({
+          name: request.params.name,
+          stopped,
+        });
+        return;
+      }
+
+      const job = await jobService.enqueueVmStopJob(request.params.name);
+      response.status(202).json({
         name: request.params.name,
-        stopped,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -489,7 +525,7 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
       const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
-      const savedConfig = await deps.saveVmConfig(payload);
+      const savedConfig = await deps.saveVmConfig(payload, { persist: !jobService });
       
       // Enqueue job for asynchronous cloning
       if (!jobService) {
@@ -505,15 +541,26 @@ export function createApp(deps = defaultDependencies) {
       }
       
       // Enqueue job
-      const job = await jobService.enqueueVmCloneJob(
-        request.params.name,
-        savedConfig.config.vm.name,
-        savedConfig.configPath
+      const persisted = await deps.upsertStoredVmDefinitionAndEnqueueJob(
+        {
+          vm_name: savedConfig.vmName,
+          owner_user_id: savedConfig.config.vm.owner_user_id || null,
+          network_group_id: savedConfig.config.vm.network_group_id || null,
+          target_host_id: hostId,
+          config: savedConfig.config,
+          ssh_public_key: payload.sshPublicKey ? `${payload.sshPublicKey.trim()}\n` : null,
+          setup_script: payload.setupScript ? `${payload.setupScript.trim()}\n` : null,
+        },
+        'clone_vm',
+        { sourceVmName: request.params.name, targetVmName: savedConfig.vmName },
+        { targetVmId: savedConfig.vmName, maxAttempts: 3, targetHostId: hostId },
       );
+      const job = persisted.job;
 
       response.status(202).json({
         sourceName: request.params.name,
         ...savedConfig,
+        vmDefinitionId: persisted.vmDefinition.id,
         job_id: job.id,
         status: job.status,
       });
@@ -535,7 +582,7 @@ export function createApp(deps = defaultDependencies) {
         { config: nextConfig },
         { existingVmName: request.params.name },
       );
-      const savedConfig = await deps.saveVmConfig(preparedPayload, { overwrite: true });
+      const savedConfig = await deps.saveVmConfig(preparedPayload, { overwrite: true, persist: !jobService });
       
       // Enqueue job for asynchronous reconciliation
       if (!jobService) {
@@ -550,12 +597,27 @@ export function createApp(deps = defaultDependencies) {
       }
       
       // Enqueue job
-      const job = await jobService.enqueueVmReconcileJob({ policyOnly: true });
+      const persisted = await deps.upsertStoredVmDefinitionAndEnqueueJob(
+        {
+          vm_name: savedConfig.vmName,
+          owner_user_id: savedConfig.config.vm.owner_user_id || null,
+          network_group_id: savedConfig.config.vm.network_group_id || null,
+          target_host_id: hostId,
+          config: savedConfig.config,
+          ssh_public_key: null,
+          setup_script: null,
+        },
+        'reconcile_vm_networking',
+        { policyOnly: true },
+        { targetVmId: null, maxAttempts: 1, targetHostId: hostId },
+      );
+      const job = persisted.job;
       
       response.status(202).json({
         vmName: request.params.name,
         configPath: savedConfig.configPath,
         config: savedConfig.config,
+        vmDefinitionId: persisted.vmDefinition.id,
         job_id: job.id,
         status: job.status,
       });
@@ -566,10 +628,21 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/snapshots',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const snapshot = await deps.createVmSnapshot(request.params.name);
-      response.status(201).json({
+
+      if (!jobService) {
+        const snapshot = await deps.createVmSnapshot(request.params.name);
+        response.status(201).json({
+          name: request.params.name,
+          snapshot,
+        });
+        return;
+      }
+
+      const job = await jobService.enqueueVmSnapshotCreateJob(request.params.name);
+      response.status(202).json({
         name: request.params.name,
-        snapshot,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -578,11 +651,26 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/snapshots/:snapshotId/restore',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const restored = await deps.restoreVmSnapshot(request.params.name, request.params.snapshotId);
-      response.json({
+
+      if (!jobService) {
+        const restored = await deps.restoreVmSnapshot(request.params.name, request.params.snapshotId);
+        response.json({
+          name: request.params.name,
+          snapshotId: request.params.snapshotId,
+          restored,
+        });
+        return;
+      }
+
+      const job = await jobService.enqueueVmSnapshotRestoreJob(
+        request.params.name,
+        request.params.snapshotId,
+      );
+      response.status(202).json({
         name: request.params.name,
         snapshotId: request.params.snapshotId,
-        restored,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );
@@ -591,11 +679,26 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms/:name/snapshots/:snapshotId',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
-      const deleted = await deps.deleteVmSnapshot(request.params.name, request.params.snapshotId);
-      response.json({
+
+      if (!jobService) {
+        const deleted = await deps.deleteVmSnapshot(request.params.name, request.params.snapshotId);
+        response.json({
+          name: request.params.name,
+          snapshotId: request.params.snapshotId,
+          deleted,
+        });
+        return;
+      }
+
+      const job = await jobService.enqueueVmSnapshotDeleteJob(
+        request.params.name,
+        request.params.snapshotId,
+      );
+      response.status(202).json({
         name: request.params.name,
         snapshotId: request.params.snapshotId,
-        deleted,
+        job_id: job.id,
+        status: job.status,
       });
     }),
   );

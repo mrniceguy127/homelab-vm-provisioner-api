@@ -1,8 +1,14 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import yaml from 'js-yaml';
+
+import {
+  deleteStoredVmDefinition,
+  listStoredVmDefinitions,
+  loadStoredVmDefinitionByName,
+  upsertStoredVmDefinition,
+} from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,30 +39,6 @@ export const configRoot = path.join(provisionerDataRoot, 'configs');
 export const userKeyRoot = path.join(provisionerDataRoot, 'vm', 'keys', 'users');
 export const vmDataRoot = path.join(provisionerDataRoot, 'vm', 'data');
 export const scriptRoot = path.join(provisionerDataRoot, 'vm', 'scripts');
-
-function toProvisionerRelativePath(filePath) {
-  return path.relative(provisionerDataRoot, filePath);
-}
-
-function normalizeStoredPath(filePath) {
-  if (!path.isAbsolute(filePath)) {
-    return filePath;
-  }
-
-  const resolvedPath = path.resolve(filePath);
-  const relativePath = path.relative(provisionerDataRoot, resolvedPath);
-  if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
-    return relativePath;
-  }
-
-  const legacyVmRoot = path.join(provisionerRoot, 'vm');
-  const legacyVmRelativePath = path.relative(legacyVmRoot, resolvedPath);
-  if (!legacyVmRelativePath.startsWith('..') && !path.isAbsolute(legacyVmRelativePath)) {
-    return path.join('vm', legacyVmRelativePath);
-  }
-
-  return resolvedPath;
-}
 
 /**
  * Create an HTTP 422 validation error.
@@ -103,18 +85,6 @@ function createNotFoundError(message) {
  * @param {string} fallback - Fallback file name.
  * @returns {string} Safe file name.
  */
-function sanitizeFileName(value, fallback) {
-  const baseName = path.basename(value || fallback);
-  const sanitized = baseName.replace(/[^A-Za-z0-9._-]/g, '-');
-  return sanitized || fallback;
-}
-
-/**
- * Deep-clone a JSON-compatible config object.
- *
- * @param {object} config - Config object to clone.
- * @returns {object} Deep-cloned config object.
- */
 function cloneConfig(config) {
   return JSON.parse(JSON.stringify(config));
 }
@@ -136,16 +106,7 @@ export function configPathForVm(vmName) {
  * @returns {Promise<boolean>} Whether the saved config file exists.
  */
 export async function storedConfigExists(vmName) {
-  try {
-    await fs.access(configPathForVm(vmName));
-    return true;
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return false;
-    }
-
-    throw error;
-  }
+  return Boolean(await loadStoredVmDefinitionByName(vmName).catch(() => null));
 }
 
 /**
@@ -164,12 +125,7 @@ export function getVmLogPath(vmName) {
  * @returns {Promise<void>} Resolves when the directories exist.
  */
 export async function ensureRuntimeDirectories() {
-  await Promise.all([
-    fs.mkdir(configRoot, { recursive: true }),
-    fs.mkdir(userKeyRoot, { recursive: true }),
-    fs.mkdir(vmDataRoot, { recursive: true }),
-    fs.mkdir(scriptRoot, { recursive: true }),
-  ]);
+  return;
 }
 
 /**
@@ -181,13 +137,10 @@ export async function ensureRuntimeDirectories() {
  * @returns {Promise<object>} Saved config metadata.
  */
 export async function saveVmConfig({ config, sshPublicKey, setupScript }, options = {}) {
-  const { overwrite = false } = options;
+  const { overwrite = false, persist = true } = options;
   const effectiveConfig = cloneConfig(config);
   const vmName = effectiveConfig.vm.name;
 
-  await ensureRuntimeDirectories();
-
-  const configPath = configPathForVm(vmName);
   if (!overwrite && await storedConfigExists(vmName)) {
     throw createConflictError(`VM name is already in use by a saved config: ${vmName}`);
   }
@@ -200,63 +153,49 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
     delete effectiveConfig.scripts;
   }
 
-  let keyPath = null;
+  let sshPublicKeyContent = null;
   if (sshPublicKey) {
-    const requestedKeyFile = effectiveConfig.vm.ssh_key_file || `${vmName}.pub`;
-    const keyFileName = sanitizeFileName(requestedKeyFile, `${vmName}.pub`);
-    keyPath = path.join(userKeyRoot, keyFileName);
-    await fs.writeFile(keyPath, `${sshPublicKey.trim()}\n`, 'utf8');
-    effectiveConfig.vm.ssh_key_file = toProvisionerRelativePath(keyPath);
+    sshPublicKeyContent = `${sshPublicKey.trim()}\n`;
   } else if (effectiveConfig.vm.ssh_key_file) {
-    effectiveConfig.vm.ssh_key_file = normalizeStoredPath(effectiveConfig.vm.ssh_key_file);
-    const resolvedKeyPath = path.isAbsolute(effectiveConfig.vm.ssh_key_file)
-      ? effectiveConfig.vm.ssh_key_file
-      : path.resolve(provisionerDataRoot, effectiveConfig.vm.ssh_key_file);
-
-    try {
-      await fs.access(resolvedKeyPath);
-    } catch {
-      throw createValidationError(
-        `Referenced SSH public key was not found: ${effectiveConfig.vm.ssh_key_file}`,
-      );
-    }
-  }
-
-  let scriptPath = null;
-  if (setupScript) {
-    const requestedScriptFile = effectiveConfig.scripts?.setup_script_file || `${vmName}-setup.sh`;
-    const scriptFileName = sanitizeFileName(requestedScriptFile, `${vmName}-setup.sh`);
-    scriptPath = path.join(scriptRoot, scriptFileName);
-    await fs.writeFile(scriptPath, `${setupScript.trim()}\n`, 'utf8');
-    effectiveConfig.scripts = {
-      ...(effectiveConfig.scripts || {}),
-      setup_script_file: toProvisionerRelativePath(scriptPath),
-    };
-  } else if (effectiveConfig.scripts?.setup_script_file) {
-    effectiveConfig.scripts.setup_script_file = normalizeStoredPath(
-      effectiveConfig.scripts.setup_script_file,
+    throw createValidationError(
+      'config.vm.ssh_key_file is not supported for API-managed VMs; provide sshPublicKey instead',
     );
-    const resolvedScriptPath = path.isAbsolute(effectiveConfig.scripts.setup_script_file)
-      ? effectiveConfig.scripts.setup_script_file
-      : path.resolve(provisionerDataRoot, effectiveConfig.scripts.setup_script_file);
+  }
+  delete effectiveConfig.vm.ssh_key_file;
 
-    try {
-      await fs.access(resolvedScriptPath);
-    } catch {
-      throw createValidationError(
-        `Referenced setup script was not found: ${effectiveConfig.scripts.setup_script_file}`,
-      );
+  let setupScriptContent = null;
+  if (setupScript) {
+    setupScriptContent = `${setupScript.trim()}\n`;
+  } else if (effectiveConfig.scripts?.setup_script_file) {
+    throw createValidationError(
+      'config.scripts.setup_script_file is not supported for API-managed VMs; provide setupScript instead',
+    );
+  }
+  if (effectiveConfig.scripts) {
+    delete effectiveConfig.scripts.setup_script_file;
+    if (Object.keys(effectiveConfig.scripts).length === 0) {
+      delete effectiveConfig.scripts;
     }
   }
 
   const rawConfig = yaml.dump(effectiveConfig, { lineWidth: -1 });
-  await fs.writeFile(configPath, rawConfig, 'utf8');
+
+  const vmDefinition = persist ? await upsertStoredVmDefinition({
+    vm_name: vmName,
+    owner_user_id: effectiveConfig.vm.owner_user_id || null,
+    network_group_id: effectiveConfig.vm.network_group_id || null,
+    target_host_id: process.env.HOST_ID || 'local',
+    config: effectiveConfig,
+    ssh_public_key: sshPublicKeyContent,
+    setup_script: setupScriptContent,
+  }) : null;
 
   return {
     vmName,
-    keyPath,
-    scriptPath,
-    configPath,
+    vmDefinitionId: vmDefinition?.id || null,
+    keyPath: null,
+    scriptPath: null,
+    configPath: null,
     rawConfig,
     config: effectiveConfig,
   };
@@ -272,18 +211,15 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
  * @returns {Promise<void>} Resolves after all created files are removed.
  */
 export async function deleteSavedConfigArtifacts(savedConfig) {
-  const paths = [savedConfig?.configPath, savedConfig?.keyPath, savedConfig?.scriptPath]
-    .filter(Boolean);
-
-  await Promise.all(paths.map(async (filePath) => {
-    try {
-      await fs.unlink(filePath);
-    } catch (error) {
-      if (error?.code !== 'ENOENT') {
+  if (savedConfig?.vmName) {
+    await deleteStoredVmDefinition(savedConfig.vmName).catch((error) => {
+      if (error?.statusCode !== 404) {
         throw error;
       }
-    }
-  }));
+    });
+  }
+
+  return;
 }
 
 /**
@@ -293,24 +229,20 @@ export async function deleteSavedConfigArtifacts(savedConfig) {
  * @returns {Promise<object>} Saved config metadata and parsed YAML.
  */
 export async function loadStoredConfig(vmName) {
-  const configPath = configPathForVm(vmName);
-
-  let rawConfig;
-  try {
-    rawConfig = await fs.readFile(configPath, 'utf8');
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      throw createNotFoundError(`Stored config was not found for VM: ${vmName}`);
-    }
-
-    throw error;
+  const vmDefinition = await loadStoredVmDefinitionByName(vmName).catch(() => null);
+  if (!vmDefinition) {
+    throw createNotFoundError(`Stored config was not found for VM: ${vmName}`);
   }
+
+  const config = vmDefinition.config || {};
+  const rawConfig = yaml.dump(config, { lineWidth: -1 });
 
   return {
     vmName,
-    configPath,
+    configPath: null,
     rawConfig,
-    config: yaml.load(rawConfig),
+    config,
+    vmDefinitionId: vmDefinition.id,
   };
 }
 
@@ -320,17 +252,8 @@ export async function loadStoredConfig(vmName) {
  * @returns {Promise<string[]>} Sorted saved VM names.
  */
 export async function listStoredConfigNames() {
-  try {
-    const entries = await fs.readdir(configRoot, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.yaml'))
-      .map((entry) => entry.name.replace(/\.ya?ml$/, ''))
-      .sort((left, right) => left.localeCompare(right));
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return [];
-    }
-
-    throw error;
-  }
+  const vmDefinitions = await listStoredVmDefinitions().catch(() => []);
+  return vmDefinitions
+    .map((entry) => entry.vm_name)
+    .sort((left, right) => left.localeCompare(right));
 }

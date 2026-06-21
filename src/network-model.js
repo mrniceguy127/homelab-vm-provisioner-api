@@ -5,6 +5,13 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 
 import { configRoot, ensureRuntimeDirectories, provisionerDataRoot, provisionerRoot } from './config-store.js';
+import {
+  listStoredNetworkGroups,
+  listStoredUsers,
+  listStoredVmDefinitions,
+  upsertStoredNetworkGroup,
+  upsertStoredUser,
+} from './db.js';
 
 export const NETWORK_PROFILES = ['private', 'nat', 'isolated_nat', 'bridged'];
 export const DEFAULT_NETWORK_POOL_CIDR = process.env.HLVMP_NETWORK_POOL_CIDR || '10.80.0.0/16';
@@ -206,11 +213,6 @@ async function readJsonStore(filePath) {
   }
 }
 
-async function writeJsonStore(filePath, value) {
-  await ensureMetadataDirectories();
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
-}
-
 async function readYamlFileIfExists(filePath) {
   try {
     return yaml.load(await fs.readFile(filePath, 'utf8')) || {};
@@ -228,28 +230,41 @@ async function readYamlFileIfExists(filePath) {
  * @returns {Promise<Array<{vmName:string,configPath:string,config:object}>>} Stored config entries.
  */
 export async function loadStoredConfigs() {
+  const configs = [];
+  const seenVmNames = new Set();
+
   await ensureRuntimeDirectories();
 
-  let entries = [];
   try {
-    entries = await fs.readdir(configRoot, { withFileTypes: true });
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return [];
+    const entries = await fs.readdir(configRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.yaml')) {
+        continue;
+      }
+
+      const configPath = path.join(configRoot, entry.name);
+      const config = yaml.load(await fs.readFile(configPath, 'utf8')) || {};
+      const vmName = String(config?.vm?.name || entry.name.replace(/\.ya?ml$/, '')).trim();
+      configs.push({ vmName, configPath, config });
+      seenVmNames.add(vmName);
     }
-    throw error;
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') {
+      throw error;
+    }
   }
 
-  const configs = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.yaml')) {
+  const vmDefinitions = await listStoredVmDefinitions().catch(() => []);
+  for (const vmDefinition of vmDefinitions) {
+    if (seenVmNames.has(vmDefinition.vm_name)) {
       continue;
     }
 
-    const configPath = path.join(configRoot, entry.name);
-    const config = yaml.load(await fs.readFile(configPath, 'utf8')) || {};
-    const vmName = String(config?.vm?.name || entry.name.replace(/\.ya?ml$/, '')).trim();
-    configs.push({ vmName, configPath, config });
+    configs.push({
+      vmName: vmDefinition.vm_name,
+      configPath: path.join(configRoot, `${vmDefinition.vm_name}.yaml`),
+      config: vmDefinition.config || {},
+    });
   }
 
   return configs.sort((left, right) => left.vmName.localeCompare(right.vmName));
@@ -284,8 +299,17 @@ export async function writeStoredConfig(configPath, config) {
  * @returns {Promise<object[]>} Known users.
  */
 export async function listUsers() {
+  const users = await listStoredUsers();
+  if (users.length > 0) {
+    return users;
+  }
+
   await ensureMetadataDirectories();
-  return readJsonStore(usersStorePath);
+  const legacyUsers = await readJsonStore(usersStorePath);
+  if (legacyUsers.length > 0) {
+    await Promise.all(legacyUsers.map((user) => upsertStoredUser(user)));
+  }
+  return legacyUsers;
 }
 
 /**
@@ -306,8 +330,7 @@ export async function ensureDefaultUser() {
     role: 'admin',
     created_at: new Date().toISOString(),
   };
-  await writeJsonStore(usersStorePath, [...users, nextUser]);
-  return nextUser;
+  return upsertStoredUser(nextUser);
 }
 
 /**
@@ -316,8 +339,17 @@ export async function ensureDefaultUser() {
  * @returns {Promise<object[]>} Known network groups.
  */
 export async function listNetworkGroups() {
+  const networkGroups = await listStoredNetworkGroups();
+  if (networkGroups.length > 0) {
+    return networkGroups;
+  }
+
   await ensureMetadataDirectories();
-  return readJsonStore(networkGroupsStorePath);
+  const legacyNetworkGroups = await readJsonStore(networkGroupsStorePath);
+  if (legacyNetworkGroups.length > 0) {
+    await Promise.all(legacyNetworkGroups.map((group) => upsertStoredNetworkGroup(group)));
+  }
+  return legacyNetworkGroups;
 }
 
 function networkGroupSignature(group) {
@@ -361,7 +393,7 @@ function buildNetworkGroupRecord({ ownerUserId, name, profile, subnetCidr, bridg
 }
 
 async function saveNetworkGroups(networkGroups) {
-  await writeJsonStore(networkGroupsStorePath, networkGroups);
+  await Promise.all(networkGroups.map((networkGroup) => upsertStoredNetworkGroup(networkGroup)));
 }
 
 /**

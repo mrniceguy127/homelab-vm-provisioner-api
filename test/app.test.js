@@ -101,6 +101,7 @@ function buildDeps(overrides = {}) {
     parseVmPolicyRequest,
     formatValidationError,
     isValidationError,
+    loadStoredVmRuntimeState: async () => null,
     getRepository: () => null,
     isDatabaseAvailable: () => false,
     createJobService: () => null,

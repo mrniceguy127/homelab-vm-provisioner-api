@@ -61,16 +61,16 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
      * Enqueue a VM provision job
      * 
      * @param {string} vmName - VM name
-     * @param {string} configPath - Path to VM configuration file
+     * @param {string} vmName - VM name
      * @returns {Promise<object>} Created job
      */
-    async enqueueVmProvisionJob(vmName, configPath) {
+    async enqueueVmProvisionJob(vmName) {
       requireHostId();
       
       const job = await repository.enqueueJob(
         'provision_vm',
         hostId,
-        { configPath },
+        { vmName },
         { targetVmId: vmName, maxAttempts: 3 }
       );
       
@@ -103,16 +103,16 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
      * 
      * @param {string} sourceVmName - Source VM name
      * @param {string} targetVmName - Target VM name
-     * @param {string} configPath - Path to target VM configuration file
+     * @param {string} targetVmName - Target VM name
      * @returns {Promise<object>} Created job
      */
-    async enqueueVmCloneJob(sourceVmName, targetVmName, configPath) {
+    async enqueueVmCloneJob(sourceVmName, targetVmName) {
       requireHostId();
       
       const job = await repository.enqueueJob(
         'clone_vm',
         hostId,
-        { sourceVmName, configPath },
+        { sourceVmName, targetVmName },
         { targetVmId: targetVmName, maxAttempts: 3 }
       );
       
@@ -137,6 +137,76 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: null, maxAttempts: 1 }
       );
       
+      await notifyWorker();
+      return job;
+    },
+
+    async enqueueVmStartJob(vmName) {
+      requireHostId();
+
+      const job = await repository.enqueueJob(
+        'start_vm',
+        hostId,
+        { vmName },
+        { targetVmId: vmName, maxAttempts: 1 }
+      );
+
+      await notifyWorker();
+      return job;
+    },
+
+    async enqueueVmStopJob(vmName) {
+      requireHostId();
+
+      const job = await repository.enqueueJob(
+        'stop_vm',
+        hostId,
+        { vmName },
+        { targetVmId: vmName, maxAttempts: 1 }
+      );
+
+      await notifyWorker();
+      return job;
+    },
+
+    async enqueueVmSnapshotCreateJob(vmName) {
+      requireHostId();
+
+      const job = await repository.enqueueJob(
+        'snapshot_create',
+        hostId,
+        { vmName },
+        { targetVmId: vmName, maxAttempts: 1 }
+      );
+
+      await notifyWorker();
+      return job;
+    },
+
+    async enqueueVmSnapshotRestoreJob(vmName, snapshotId) {
+      requireHostId();
+
+      const job = await repository.enqueueJob(
+        'snapshot_restore',
+        hostId,
+        { vmName, snapshotId },
+        { targetVmId: vmName, maxAttempts: 1 }
+      );
+
+      await notifyWorker();
+      return job;
+    },
+
+    async enqueueVmSnapshotDeleteJob(vmName, snapshotId) {
+      requireHostId();
+
+      const job = await repository.enqueueJob(
+        'snapshot_delete',
+        hostId,
+        { vmName, snapshotId },
+        { targetVmId: vmName, maxAttempts: 1 }
+      );
+
       await notifyWorker();
       return job;
     },

@@ -14,8 +14,20 @@ import {
   ensureRuntimeDirectories,
   listStoredConfigNames,
 } from '../src/config-store.js';
+import {
+  deleteStoredVmDefinition,
+  listStoredVmDefinitions,
+  loadStoredVmDefinitionByName,
+  upsertStoredVmDefinition,
+} from '../src/db.js';
 
 vi.mock('node:fs/promises');
+vi.mock('../src/db.js', () => ({
+  upsertStoredVmDefinition: vi.fn(async () => ({ id: 42 })),
+  deleteStoredVmDefinition: vi.fn(async () => null),
+  loadStoredVmDefinitionByName: vi.fn(async () => null),
+  listStoredVmDefinitions: vi.fn(async () => []),
+}));
 
 describe('config-store', () => {
   beforeEach(() => {
@@ -53,39 +65,45 @@ describe('config-store', () => {
   });
 
   describe('storedConfigExists', () => {
-    it('returns true when config file exists', async () => {
-      fs.access.mockResolvedValue();
+    it('returns true when VM definition exists', async () => {
+      loadStoredVmDefinitionByName.mockResolvedValue({ id: 1, vm_name: 'test-vm', config: {} });
 
       const result = await storedConfigExists('test-vm');
 
       expect(result).toBe(true);
-      expect(fs.access).toHaveBeenCalled();
+      expect(loadStoredVmDefinitionByName).toHaveBeenCalledWith('test-vm');
     });
 
-    it('returns false when config file does not exist', async () => {
-      fs.access.mockRejectedValue({ code: 'ENOENT' });
+    it('returns false when VM definition does not exist', async () => {
+      loadStoredVmDefinitionByName.mockResolvedValue(null);
 
       const result = await storedConfigExists('nonexistent-vm');
 
       expect(result).toBe(false);
     });
 
-    it('throws on non-ENOENT errors', async () => {
-      fs.access.mockRejectedValue(new Error('Permission denied'));
+    it('returns false when DB lookup throws', async () => {
+      loadStoredVmDefinitionByName.mockRejectedValue(new Error('Permission denied'));
 
-      await expect(storedConfigExists('test-vm')).rejects.toThrow('Permission denied');
+      await expect(storedConfigExists('test-vm')).resolves.toBe(false);
     });
   });
 
   describe('loadStoredConfig', () => {
-    it('loads and parses YAML config file', async () => {
-      const configYaml = `vm:
-  name: test-vm
-  user: testuser
-network:
-  mode: nat-auto
-`;
-      fs.readFile.mockResolvedValue(configYaml);
+    it('loads and serializes VM definition from DB', async () => {
+      loadStoredVmDefinitionByName.mockResolvedValue({
+        id: 7,
+        vm_name: 'test-vm',
+        config: {
+          vm: {
+            name: 'test-vm',
+            user: 'testuser',
+          },
+          network: {
+            mode: 'nat-auto',
+          },
+        },
+      });
 
       const result = await loadStoredConfig('test-vm');
 
@@ -99,34 +117,28 @@ network:
           mode: 'nat-auto',
         },
       });
-      expect(result.configPath).toContain('test-vm.yaml');
-      expect(result.rawConfig).toBe(configYaml);
+      expect(result.configPath).toBeNull();
+      expect(result.vmDefinitionId).toBe(7);
+      expect(result.rawConfig).toContain('name: test-vm');
     });
 
     it('throws not-found error when config missing', async () => {
-      fs.readFile.mockRejectedValue({ code: 'ENOENT' });
+      loadStoredVmDefinitionByName.mockResolvedValue(null);
 
       await expect(loadStoredConfig('missing-vm')).rejects.toMatchObject({
         message: expect.stringContaining('not found'),
         statusCode: 404,
       });
     });
-
-    it('throws on read errors', async () => {
-      fs.readFile.mockRejectedValue(new Error('Read failed'));
-
-      await expect(loadStoredConfig('test-vm')).rejects.toThrow('Read failed');
-    });
   });
 
   describe('saveVmConfig', () => {
     beforeEach(() => {
-      fs.mkdir.mockResolvedValue();
-      fs.writeFile.mockResolvedValue();
-      fs.access.mockRejectedValue({ code: 'ENOENT' });
+      loadStoredVmDefinitionByName.mockResolvedValue(null);
+      upsertStoredVmDefinition.mockResolvedValue({ id: 42 });
     });
 
-    it('saves config as YAML file', async () => {
+    it('saves config as VM definition in DB', async () => {
       const config = {
         vm: {
           name: 'test-vm',
@@ -139,26 +151,17 @@ network:
 
       const result = await saveVmConfig({ config });
 
-      expect(fs.mkdir).toHaveBeenCalled();
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('test-vm.yaml'),
-        expect.stringContaining('name: test-vm'),
-        'utf8',
-      );
+      expect(upsertStoredVmDefinition).toHaveBeenCalledWith(expect.objectContaining({
+        vm_name: 'test-vm',
+        config: expect.objectContaining({ vm: expect.objectContaining({ name: 'test-vm' }) }),
+      }));
       expect(result.vmName).toBe('test-vm');
-      expect(result.configPath).toContain('test-vm.yaml');
-    });
-
-    it('creates runtime directories', async () => {
-      const config = { vm: { name: 'test-vm' } };
-
-      await saveVmConfig({ config });
-
-      expect(fs.mkdir).toHaveBeenCalled();
+      expect(result.configPath).toBeNull();
+      expect(result.vmDefinitionId).toBe(42);
     });
 
     it('throws conflict error if config already exists', async () => {
-      fs.access.mockResolvedValue();
+      loadStoredVmDefinitionByName.mockResolvedValue({ id: 1, vm_name: 'existing-vm', config: {} });
       const config = { vm: { name: 'existing-vm' } };
 
       await expect(saveVmConfig({ config })).rejects.toMatchObject({
@@ -168,7 +171,7 @@ network:
     });
 
     it('allows overwrite when option is set', async () => {
-      fs.access.mockResolvedValue();
+      loadStoredVmDefinitionByName.mockResolvedValue({ id: 1, vm_name: 'existing-vm', config: {} });
       const config = { vm: { name: 'existing-vm' } };
 
       const result = await saveVmConfig({ config }, { overwrite: true });
@@ -182,13 +185,11 @@ network:
 
       const result = await saveVmConfig({ config, sshPublicKey });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('test-vm.pub'),
-        expect.stringContaining('ssh-rsa'),
-        'utf8',
-      );
-      expect(result.keyPath).toContain('test-vm.pub');
-      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/test-vm.pub');
+      expect(upsertStoredVmDefinition).toHaveBeenCalledWith(expect.objectContaining({
+        ssh_public_key: 'ssh-rsa AAAAB3...\n',
+      }));
+      expect(result.keyPath).toBeNull();
+      expect(result.config.vm.ssh_key_file).toBeUndefined();
     });
 
     it('saves setup script when provided', async () => {
@@ -197,16 +198,14 @@ network:
 
       const result = await saveVmConfig({ config, setupScript });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('test-vm-setup.sh'),
-        expect.stringContaining('#!/bin/bash'),
-        'utf8',
-      );
-      expect(result.scriptPath).toContain('test-vm-setup.sh');
-      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/test-vm-setup.sh');
+      expect(upsertStoredVmDefinition).toHaveBeenCalledWith(expect.objectContaining({
+        setup_script: '#!/bin/bash\necho "setup"\n',
+      }));
+      expect(result.scriptPath).toBeNull();
+      expect(result.config.scripts?.setup_script_file).toBeUndefined();
     });
 
-    it('accepts relative path for existing SSH key file', async () => {
+    it('rejects file-backed SSH key references for API-managed VMs', async () => {
       const config = {
         vm: {
           name: 'test-vm',
@@ -214,46 +213,13 @@ network:
         },
       };
 
-      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
-      fs.access.mockResolvedValueOnce();
-
-      const result = await saveVmConfig({ config });
-
-      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/relative/path.pub');
-      expect(fs.access).toHaveBeenCalled();
-    });
-
-    it('normalizes absolute managed SSH key path to relative storage', async () => {
-      const config = {
-        vm: {
-          name: 'test-vm',
-          ssh_key_file: `${provisionerRoot}/vm/keys/users/test-vm.pub`,
-        },
-      };
-
-      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
-      fs.access.mockResolvedValueOnce();
-
-      const result = await saveVmConfig({ config });
-
-      expect(result.config.vm.ssh_key_file).toBe('vm/keys/users/test-vm.pub');
-    });
-
-    it('validates missing existing SSH key file', async () => {
-      const config = {
-        vm: {
-          name: 'test-vm',
-          ssh_key_file: 'vm/keys/users/missing.pub',
-        },
-      };
-
       await expect(saveVmConfig({ config })).rejects.toMatchObject({
-        message: expect.stringContaining('Referenced SSH public key was not found'),
+        message: expect.stringContaining('ssh_key_file is not supported'),
         statusCode: 422,
       });
     });
 
-    it('accepts relative path for existing setup script', async () => {
+    it('rejects file-backed setup script references for API-managed VMs', async () => {
       const config = {
         vm: { name: 'test-vm' },
         scripts: {
@@ -261,41 +227,8 @@ network:
         },
       };
 
-      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
-      fs.access.mockResolvedValueOnce();
-
-      const result = await saveVmConfig({ config });
-
-      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/relative/script.sh');
-      expect(fs.access).toHaveBeenCalled();
-    });
-
-    it('normalizes absolute managed setup script path to relative storage', async () => {
-      const config = {
-        vm: { name: 'test-vm' },
-        scripts: {
-          setup_script_file: `${provisionerRoot}/vm/scripts/test-vm-setup.sh`,
-        },
-      };
-
-      fs.access.mockRejectedValueOnce({ code: 'ENOENT' });
-      fs.access.mockResolvedValueOnce();
-
-      const result = await saveVmConfig({ config });
-
-      expect(result.config.scripts.setup_script_file).toBe('vm/scripts/test-vm-setup.sh');
-    });
-
-    it('validates missing existing setup script', async () => {
-      const config = {
-        vm: { name: 'test-vm' },
-        scripts: {
-          setup_script_file: 'vm/scripts/missing.sh',
-        },
-      };
-
       await expect(saveVmConfig({ config })).rejects.toMatchObject({
-        message: expect.stringContaining('Referenced setup script was not found'),
+        message: expect.stringContaining('setup_script_file is not supported'),
         statusCode: 422,
       });
     });
@@ -306,10 +239,9 @@ network:
         paths: {},
       };
 
-      await saveVmConfig({ config });
+      const result = await saveVmConfig({ config });
 
-      const writeCall = fs.writeFile.mock.calls.find(call => call[0].includes('test-vm.yaml'));
-      expect(writeCall[1]).not.toContain('paths:');
+      expect(result.rawConfig).not.toContain('paths:');
     });
 
     it('removes empty scripts section', async () => {
@@ -318,59 +250,37 @@ network:
         scripts: {},
       };
 
-      await saveVmConfig({ config });
+      const result = await saveVmConfig({ config });
 
-      const writeCall = fs.writeFile.mock.calls.find(call => call[0].includes('test-vm.yaml'));
-      expect(writeCall[1]).not.toContain('scripts:');
+      expect(result.rawConfig).not.toContain('scripts:');
     });
   });
 
   describe('deleteSavedConfigArtifacts', () => {
-    it('deletes all saved artifacts', async () => {
-      fs.unlink.mockResolvedValue();
-
+    it('deletes stored VM definition', async () => {
       const savedConfig = {
-        configPath: '/configs/test-vm.yaml',
-        keyPath: '/keys/test-vm.pub',
-        scriptPath: '/scripts/test-vm-setup.sh',
+        vmName: 'test-vm',
       };
 
       await deleteSavedConfigArtifacts(savedConfig);
 
-      expect(fs.unlink).toHaveBeenCalledTimes(3);
-      expect(fs.unlink).toHaveBeenCalledWith('/configs/test-vm.yaml');
-      expect(fs.unlink).toHaveBeenCalledWith('/keys/test-vm.pub');
-      expect(fs.unlink).toHaveBeenCalledWith('/scripts/test-vm-setup.sh');
+      expect(deleteStoredVmDefinition).toHaveBeenCalledWith('test-vm');
     });
 
-    it('ignores ENOENT errors', async () => {
-      fs.unlink.mockRejectedValue({ code: 'ENOENT' });
+    it('ignores 404 delete errors', async () => {
+      deleteStoredVmDefinition.mockRejectedValue({ statusCode: 404 });
 
-      const savedConfig = { configPath: '/configs/test-vm.yaml' };
+      const savedConfig = { vmName: 'test-vm' };
 
       await expect(deleteSavedConfigArtifacts(savedConfig)).resolves.not.toThrow();
     });
 
     it('throws non-ENOENT errors', async () => {
-      fs.unlink.mockRejectedValue(new Error('Permission denied'));
+      deleteStoredVmDefinition.mockRejectedValue(new Error('Permission denied'));
 
-      const savedConfig = { configPath: '/configs/test-vm.yaml' };
+      const savedConfig = { vmName: 'test-vm' };
 
       await expect(deleteSavedConfigArtifacts(savedConfig)).rejects.toThrow('Permission denied');
-    });
-
-    it('handles null artifact paths', async () => {
-      fs.unlink.mockResolvedValue();
-
-      const savedConfig = {
-        configPath: '/configs/test-vm.yaml',
-        keyPath: null,
-        scriptPath: null,
-      };
-
-      await deleteSavedConfigArtifacts(savedConfig);
-
-      expect(fs.unlink).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -389,26 +299,18 @@ network:
   });
 
   describe('ensureRuntimeDirectories', () => {
-    it('creates all runtime directories', async () => {
-      fs.mkdir.mockResolvedValue();
-
+    it('is a no-op for service-managed API mode', async () => {
       await ensureRuntimeDirectories();
 
-      expect(fs.mkdir).toHaveBeenCalledTimes(4);
-      expect(fs.mkdir).toHaveBeenCalledWith(
-        expect.stringContaining('configs'),
-        { recursive: true },
-      );
+      expect(fs.mkdir).not.toHaveBeenCalled();
     });
   });
 
   describe('listStoredConfigNames', () => {
-    it('lists all YAML config files', async () => {
-      fs.readdir.mockResolvedValue([
-        { name: 'vm1.yaml', isFile: () => true },
-        { name: 'vm2.yaml', isFile: () => true },
-        { name: 'other.txt', isFile: () => true },
-        { name: 'subdir', isFile: () => false },
+    it('lists all VM definitions from DB', async () => {
+      listStoredVmDefinitions.mockResolvedValue([
+        { vm_name: 'vm1' },
+        { vm_name: 'vm2' },
       ]);
 
       const result = await listStoredConfigNames();
@@ -416,8 +318,8 @@ network:
       expect(result).toEqual(['vm1', 'vm2']);
     });
 
-    it('returns empty array when directory does not exist', async () => {
-      fs.readdir.mockRejectedValue({ code: 'ENOENT' });
+    it('returns empty array when DB lookup fails', async () => {
+      listStoredVmDefinitions.mockRejectedValue(new Error('db unavailable'));
 
       const result = await listStoredConfigNames();
 
@@ -425,21 +327,15 @@ network:
     });
 
     it('sorts results alphabetically', async () => {
-      fs.readdir.mockResolvedValue([
-        { name: 'zebra.yaml', isFile: () => true },
-        { name: 'alpha.yaml', isFile: () => true },
-        { name: 'beta.yaml', isFile: () => true },
+      listStoredVmDefinitions.mockResolvedValue([
+        { vm_name: 'zebra' },
+        { vm_name: 'alpha' },
+        { vm_name: 'beta' },
       ]);
 
       const result = await listStoredConfigNames();
 
       expect(result).toEqual(['alpha', 'beta', 'zebra']);
-    });
-
-    it('throws on non-ENOENT errors', async () => {
-      fs.readdir.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(listStoredConfigNames()).rejects.toThrow('Permission denied');
     });
   });
 });

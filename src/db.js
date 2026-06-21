@@ -234,6 +234,104 @@ export function isDatabaseAvailable() {
   return globalRepository !== null;
 }
 
+export async function listStoredUsers() {
+  const result = await dbRequest('/users');
+  return result.users;
+}
+
+export async function upsertStoredUser(user) {
+  const result = await dbRequest('/users', {
+    method: 'POST',
+    body: JSON.stringify(user),
+  });
+  return result.user;
+}
+
+export async function listStoredNetworkGroups() {
+  const result = await dbRequest('/network-groups');
+  return result.networkGroups;
+}
+
+export async function upsertStoredNetworkGroup(networkGroup) {
+  const result = await dbRequest('/network-groups', {
+    method: 'POST',
+    body: JSON.stringify(networkGroup),
+  });
+  return result.networkGroup;
+}
+
+export async function listStoredVmDefinitions() {
+  const result = await dbRequest('/vm-definitions');
+  return result.vmDefinitions;
+}
+
+export async function loadStoredVmDefinitionByName(vmName) {
+  const result = await dbRequest(`/vm-definitions/by-name/${encodeURIComponent(vmName)}`);
+  return result.vmDefinition;
+}
+
+export async function upsertStoredVmDefinition(vmDefinition) {
+  const result = await dbRequest('/vm-definitions', {
+    method: 'POST',
+    body: JSON.stringify(vmDefinition),
+  });
+  return result.vmDefinition;
+}
+
+export async function upsertStoredVmDefinitionAndEnqueueJob(vmDefinition, jobType, jobPayload, jobOptions = {}) {
+  const result = await dbRequest('/vm-definition-jobs', {
+    method: 'POST',
+    body: JSON.stringify({ vmDefinition, jobType, jobPayload, jobOptions }),
+  });
+  return result;
+}
+
+export async function deleteStoredVmDefinition(vmName) {
+  const result = await dbRequest(`/vm-definitions/by-name/${encodeURIComponent(vmName)}`, {
+    method: 'DELETE',
+  });
+  return result.vmDefinition;
+}
+
+export async function listStoredVmRuntimeStates() {
+  const result = await dbRequest('/vm-runtime-state');
+  return result.runtimeStates;
+}
+
+export async function loadStoredVmRuntimeState(vmName) {
+  try {
+    const result = await dbRequest(`/vm-runtime-state/${encodeURIComponent(vmName)}`);
+    return result.runtimeState;
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function upsertStoredVmRuntimeState(vmName, state) {
+  const result = await dbRequest(`/vm-runtime-state/${encodeURIComponent(vmName)}`, {
+    method: 'POST',
+    body: JSON.stringify({ state }),
+  });
+  return result.runtimeState;
+}
+
+export async function deleteStoredVmRuntimeState(vmName) {
+  try {
+    const result = await dbRequest(`/vm-runtime-state/${encodeURIComponent(vmName)}`, {
+      method: 'DELETE',
+    });
+    return result.runtimeState;
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
  * Close database connection (no-op for HTTP client)
  * 

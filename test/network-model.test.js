@@ -5,6 +5,33 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
+const mockUsers = [];
+const mockNetworkGroups = [];
+
+vi.mock('../src/db.js', () => ({
+  listStoredUsers: vi.fn(async () => [...mockUsers]),
+  upsertStoredUser: vi.fn(async (user) => {
+    const index = mockUsers.findIndex((entry) => entry.id === user.id);
+    if (index >= 0) {
+      mockUsers[index] = { ...mockUsers[index], ...user };
+      return mockUsers[index];
+    }
+    mockUsers.push(user);
+    return user;
+  }),
+  listStoredNetworkGroups: vi.fn(async () => [...mockNetworkGroups]),
+  upsertStoredNetworkGroup: vi.fn(async (group) => {
+    const index = mockNetworkGroups.findIndex((entry) => entry.id === group.id);
+    if (index >= 0) {
+      mockNetworkGroups[index] = { ...mockNetworkGroups[index], ...group };
+      return mockNetworkGroups[index];
+    }
+    mockNetworkGroups.push(group);
+    return group;
+  }),
+  listStoredVmDefinitions: vi.fn(async () => []),
+}));
+
 async function loadNetworkModel(tempProvisionerRoot) {
   process.env.PROVISIONER_CLI_PATH = tempProvisionerRoot;
   vi.resetModules();
@@ -15,6 +42,8 @@ let tempRoot = '';
 
 beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hvp-network-model-'));
+  mockUsers.length = 0;
+  mockNetworkGroups.length = 0;
 });
 
 afterEach(async () => {
