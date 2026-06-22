@@ -2,13 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROVISIONER_CLI_PATH="${PROVISIONER_CLI_PATH:-homelab-vm-provisioner-cli}"
-if [[ "$PROVISIONER_CLI_PATH" != /* ]]; then
-    PROVISIONER_DIR="$WORKSPACE_ROOT/$PROVISIONER_CLI_PATH"
-else
-    PROVISIONER_DIR="$PROVISIONER_CLI_PATH"
-fi
 
 cd "$SCRIPT_DIR"
 
@@ -19,12 +12,10 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set +a
 fi
 
-PROVISIONER_VENV_DIR="${PROVISIONER_VENV_DIR:-$PROVISIONER_DIR/.venv}"
-
 # Parse arguments
 SKIP_NPM=false
 SKIP_SYSTEM_PACKAGES=false
-PROVISIONER_ARGS=()
+DOCKER_MODE=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -33,26 +24,28 @@ for arg in "$@"; do
             ;;
         --skip-system-packages)
             SKIP_SYSTEM_PACKAGES=true
-            PROVISIONER_ARGS+=("$arg")
+            ;;
+        --docker)
+            DOCKER_MODE=true
+            SKIP_NPM=true
+            SKIP_SYSTEM_PACKAGES=true
             ;;
         --help)
-            echo "Usage: $0 [OPTIONS] [PROVISIONER_OPTIONS]"
+            echo "Usage: $0 [OPTIONS]"
             echo ""
-            echo "Setup the API and provisioner environment."
+            echo "Setup the API environment."
             echo ""
             echo "Options:"
             echo "  --skip-npm               Skip npm install"
             echo "  --skip-system-packages   Skip system package installation"
+            echo "  --docker                 Setup for Docker mode (skip npm install and system packages)"
             echo "  --help                   Show this help message"
-            echo ""
-            echo "Provisioner options (passed through):"
-            echo "  --dev                    Install dev dependencies (ruff, coverage, Sphinx)"
-            echo "  --python <binary>        Specify Python interpreter"
-            echo "  --venv <path>            Specify virtual environment path"
             exit 0
             ;;
         *)
-            PROVISIONER_ARGS+=("$arg")
+            echo "Unknown option: $arg"
+            echo "Use --help for usage information"
+            exit 1
             ;;
     esac
 done
@@ -232,11 +225,10 @@ fi
 
 log "Setting up API environment"
 
-# Check for Node.js and Python (required even if system packages were skipped)
-if [[ "$SKIP_SYSTEM_PACKAGES" == "true" ]]; then
+# Check for Node.js (required even if system packages were skipped)
+if [[ "$SKIP_SYSTEM_PACKAGES" == "true" && "$DOCKER_MODE" == "false" ]]; then
     require_cmd node
     require_cmd npm
-    require_cmd python3
 
     NODE_VERSION=$(node -v | cut -d. -f1 | tr -d 'v')
     if [[ "$NODE_VERSION" -lt 18 ]]; then
@@ -245,29 +237,20 @@ if [[ "$SKIP_SYSTEM_PACKAGES" == "true" ]]; then
     fi
 fi
 
-# Check for provisioner
-require_path "$PROVISIONER_DIR"
-require_path "$PROVISIONER_DIR/setup"
-
-# Setup Python provisioner
-if [[ -d "$PROVISIONER_VENV_DIR" && ! -x "$PROVISIONER_VENV_DIR/bin/python" ]]; then
-    log "Removing incomplete provisioner virtualenv"
-    rm -rf "$PROVISIONER_VENV_DIR"
-fi
-
-mkdir -p "$(dirname "$PROVISIONER_VENV_DIR")"
-
-log "Running Python provisioner setup"
-"$PROVISIONER_DIR/setup" "${PROVISIONER_ARGS[@]}" --venv "$PROVISIONER_VENV_DIR"
-
 if [[ "$SKIP_NPM" == "false" ]]; then
     log "Installing API npm packages"
     npm install
 else
-    log "Skipping npm install (--skip-npm specified)"
+    log "Skipping npm install"
 fi
 
 log "API setup complete"
-log "Build docs with: npm run build"
-log "Start API with: npm start or PORT=3001 npm start"
-log "Run tests with: npm test"
+
+if [[ "$DOCKER_MODE" == "true" ]]; then
+    log "Docker mode: Use './build --docker' to build the API image"
+    log "Start with: ./start --docker"
+else
+    log "Build docs with: npm run build"
+    log "Start API with: npm start or PORT=3001 npm start"
+    log "Run tests with: npm test"
+fi

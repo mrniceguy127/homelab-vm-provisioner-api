@@ -19,13 +19,6 @@ fi
 
 API_PORT="${API_PORT:-3001}"
 DB_SERVICE_PORT="${DB_SERVICE_PORT:-3002}"
-PROVISIONER_CLI_PATH="${PROVISIONER_CLI_PATH:-homelab-vm-provisioner-cli}"
-
-if [[ "$PROVISIONER_CLI_PATH" != /* ]]; then
-    PROVISIONER_DIR="$WORKSPACE_ROOT/$PROVISIONER_CLI_PATH"
-else
-    PROVISIONER_DIR="$PROVISIONER_CLI_PATH"
-fi
 
 log() {
     printf '==> %s\n' "$*"
@@ -68,51 +61,6 @@ docker_image_id() {
     docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true
 }
 
-relative_path() {
-    python3 -c 'import os,sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$1" "$2"
-}
-
-path_within() {
-    python3 -c 'from pathlib import Path; import sys; child = Path(sys.argv[1]).resolve(); parent = Path(sys.argv[2]).resolve(); print("true" if parent == child or parent in child.parents else "false")' "$1" "$2"
-}
-
-normalize_provisioner_env() {
-    export PROVISIONER_CLI_PATH="$PROVISIONER_DIR"
-
-    if [[ -n "${PROVISIONER_DATA_DIR:-}" && "$PROVISIONER_DATA_DIR" != /* ]]; then
-        local data_dir_absolute="$WORKSPACE_ROOT/$PROVISIONER_DATA_DIR"
-        export PROVISIONER_DATA_DIR="$(relative_path "$PROVISIONER_DIR" "$data_dir_absolute")"
-    fi
-
-    PROVISIONER_VENV_DIR="${PROVISIONER_VENV_DIR:-$PROVISIONER_DIR/.venv}"
-    if [[ -z "${HLVMP_PYTHON_BIN:-}" && -x "$PROVISIONER_VENV_DIR/bin/python" ]]; then
-        export HLVMP_PYTHON_BIN="$PROVISIONER_VENV_DIR/bin/python"
-    fi
-}
-
-build_docker_mounts() {
-    DOCKER_MOUNTS=("-v" "$WORKSPACE_ROOT:$WORKSPACE_ROOT")
-
-    if [[ "$(path_within "$PROVISIONER_DIR" "$WORKSPACE_ROOT")" != "true" ]]; then
-        DOCKER_MOUNTS+=("-v" "$PROVISIONER_DIR:$PROVISIONER_DIR")
-    fi
-
-    if [[ -n "${PROVISIONER_DATA_DIR:-}" && "$PROVISIONER_DATA_DIR" == /* && "$(path_within "$PROVISIONER_DATA_DIR" "$WORKSPACE_ROOT")" != "true" && "$(path_within "$PROVISIONER_DATA_DIR" "$PROVISIONER_DIR")" != "true" ]]; then
-        DOCKER_MOUNTS+=("-v" "$PROVISIONER_DATA_DIR:$PROVISIONER_DATA_DIR")
-    fi
-
-    if [[ -n "${WORKER_SOCKET:-}" ]]; then
-        local socket_dir
-        socket_dir="$(dirname "$WORKER_SOCKET")"
-        if [[ -d "$socket_dir" ]]; then
-            DOCKER_MOUNTS+=("-v" "$socket_dir:$socket_dir")
-            DOCKER_ENV_ARGS+=("-e" "WORKER_SOCKET=$WORKER_SOCKET")
-        else
-            log "Worker socket directory not found; skipping socket mount: $socket_dir"
-        fi
-    fi
-}
-
 DOCKER_MODE=false
 
 for arg in "$@"; do
@@ -135,8 +83,6 @@ for arg in "$@"; do
     esac
 done
 
-normalize_provisioner_env
-
 if [[ "$DOCKER_MODE" == "true" ]]; then
     if ! command -v docker >/dev/null 2>&1; then
         log "Error: Docker not found. Install Docker Engine."
@@ -154,35 +100,11 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
     fi
 
     DOCKER_ENV_ARGS=(
-        -e PORT=3001
-        -e HLVMP_DISABLE_PRIVILEGES=true
-        -e PROVISIONER_CLI_PATH="$PROVISIONER_CLI_PATH"
+        -e PORT="$API_PORT"
         -e DB_SERVICE_URL="$API_DB_SERVICE_URL"
         -e DB_SERVICE_PASSWORD="${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         -e HOST_ID="${HOST_ID:-local}"
-        -e PATH="$PATH"
     )
-
-    if [[ -n "${PROVISIONER_DATA_DIR:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "PROVISIONER_DATA_DIR=$PROVISIONER_DATA_DIR")
-    fi
-    if [[ -n "${HLVMP_PYTHON_BIN:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "HLVMP_PYTHON_BIN=$HLVMP_PYTHON_BIN")
-    fi
-    if [[ -n "${HLVMP_NETWORK_POOL_CIDR:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "HLVMP_NETWORK_POOL_CIDR=$HLVMP_NETWORK_POOL_CIDR")
-    fi
-    if [[ -n "${HLVMP_NETWORK_GROUP_PREFIX_LENGTH:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "HLVMP_NETWORK_GROUP_PREFIX_LENGTH=$HLVMP_NETWORK_GROUP_PREFIX_LENGTH")
-    fi
-    if [[ -n "${PROVISIONER_CONCURRENCY:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "PROVISIONER_CONCURRENCY=$PROVISIONER_CONCURRENCY")
-    fi
-    if [[ -n "${WORKER_POLL_INTERVAL:-}" ]]; then
-        DOCKER_ENV_ARGS+=("-e" "WORKER_POLL_INTERVAL=$WORKER_POLL_INTERVAL")
-    fi
-
-    build_docker_mounts
 
     DESIRED_IMAGE_ID="$(docker_image_id homelab-vm-provisioner-api:latest)"
     DESIRED_CONFIG_HASH="$({
@@ -190,11 +112,6 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
         printf 'DB_SERVICE_URL=%s\n' "$API_DB_SERVICE_URL"
         printf 'DB_SERVICE_PASSWORD=%s\n' "${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         printf 'HOST_ID=%s\n' "${HOST_ID:-local}"
-        printf 'PROVISIONER_CLI_PATH=%s\n' "$PROVISIONER_CLI_PATH"
-        printf 'PROVISIONER_DATA_DIR=%s\n' "${PROVISIONER_DATA_DIR:-}"
-        printf 'HLVMP_PYTHON_BIN=%s\n' "${HLVMP_PYTHON_BIN:-}"
-        printf 'WORKER_SOCKET=%s\n' "${WORKER_SOCKET:-}"
-        printf 'WORKSPACE_ROOT=%s\n' "$WORKSPACE_ROOT"
     } | hash_string)"
 
     if docker_container_exists hlvmp-api; then
@@ -219,15 +136,13 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
     log "Starting API container"
     log "  Port: $API_PORT"
     log "  DB Service URL: $API_DB_SERVICE_URL"
-    log "  Provisioner CLI: $PROVISIONER_CLI_PATH"
 
     docker run -d \
         --name hlvmp-api \
         --label hlvmp.project=homelab-vm-provisioner \
         --label "hlvmp.config-hash=$DESIRED_CONFIG_HASH" \
-        -p "$API_PORT:3001" \
+        -p "$API_PORT:$API_PORT" \
         "${DOCKER_ENV_ARGS[@]}" \
-        "${DOCKER_MOUNTS[@]}" \
         homelab-vm-provisioner-api:latest >/dev/null
 
     log "API container ready"
