@@ -333,6 +333,32 @@ export async function deleteStoredVmRuntimeState(vmName) {
 }
 
 /**
+ * Get VM log snapshot from database
+ * 
+ * @param {string} vmName - VM name
+ * @returns {Promise<object|null>} Log snapshot or null
+ */
+export async function getVmLogSnapshot(vmName) {
+  try {
+    return await dbRequest(`/vm-logs/${encodeURIComponent(vmName)}`);
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * List all VM log snapshots
+ * 
+ * @returns {Promise<Array>} List of log snapshots
+ */
+export async function listVmLogSnapshots() {
+  return await dbRequest('/vm-logs');
+}
+
+/**
  * Close database connection (no-op for HTTP client)
  * 
  * @returns {Promise<void>}

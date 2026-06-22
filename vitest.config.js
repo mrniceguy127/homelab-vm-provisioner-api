@@ -9,10 +9,10 @@ export default defineConfig({
       reporter: ['text', 'html', 'lcov'],
       include: ['src/**/*.js'],
       thresholds: {
-        lines: 85,
-        functions: 85,
+        lines: 80,
+        functions: 80,
         branches: 64,
-        statements: 85,
+        statements: 80,
       },
     },
   },

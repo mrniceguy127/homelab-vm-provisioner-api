@@ -5,8 +5,9 @@ import {
   deleteSavedConfigArtifacts,
   listStoredConfigNames,
   loadStoredConfig,
+  prepareVmConfigForSave,
   saveVmConfig,
-} from './config-store.js';
+} from './vm-definitions.js';
 import {
   getRepository,
   isDatabaseAvailable,
@@ -18,23 +19,7 @@ import {
   createNetworkGroup,
   listNetworkGroups,
   listUsers,
-  prepareVmConfigForSave,
 } from './network-model.js';
-import {
-  cloneVm,
-  createVm,
-  createVmSnapshot,
-  deleteVmSnapshot,
-  destroyVm,
-  inspectVm,
-  listHostVmNames,
-  readVmLog,
-  reconcileVmNetworking,
-  restoreVmSnapshot,
-  startVm,
-  stopVm,
-  streamVmLog,
-} from './provisioner.js';
 import {
   formatValidationError,
   isValidationError,
@@ -53,19 +38,6 @@ const defaultDependencies = {
   loadStoredConfig,
   prepareVmConfigForSave,
   saveVmConfig,
-  cloneVm,
-  createVm,
-  createVmSnapshot,
-  deleteVmSnapshot,
-  destroyVm,
-  inspectVm,
-  listHostVmNames,
-  readVmLog,
-  reconcileVmNetworking,
-  restoreVmSnapshot,
-  startVm,
-  stopVm,
-  streamVmLog,
   parseCreateVmRequest,
   parseNetworkGroupRequest,
   parseVmPolicyRequest,
@@ -101,28 +73,20 @@ export function normalizeVmName(vmName) {
 }
 
 /**
- * Ensure a VM name is unique across saved configs and host libvirt VMs.
+ * Ensure a VM name is unique across saved configs.
  *
- * @param {object} deps - Dependency bag for config and VM lookups.
+ * @param {object} deps - Dependency bag for config lookups.
  * @param {Function} deps.listStoredConfigNames - Returns saved config names.
- * @param {Function} deps.listHostVmNames - Returns host libvirt VM names.
  * @param {string} vmName - Candidate VM name.
  * @returns {Promise<void>} Resolves when the name is available.
  * @throws {Error} Throws an HTTP 409 conflict when the name is already used.
  */
 export async function assertVmNameIsAvailable(deps, vmName) {
   const normalizedVmName = normalizeVmName(vmName);
-  const [storedConfigNames, hostVmNames] = await Promise.all([
-    deps.listStoredConfigNames(),
-    deps.listHostVmNames(),
-  ]);
+  const storedConfigNames = await deps.listStoredConfigNames();
 
   if (storedConfigNames.some((name) => normalizeVmName(name) === normalizedVmName)) {
-    throw createConflictError(`VM name is already in use by a saved config: ${vmName}`);
-  }
-
-  if (hostVmNames.some((name) => normalizeVmName(name) === normalizedVmName)) {
-    throw createConflictError(`VM name is already in use by a libvirt VM on this host: ${vmName}`);
+    throw createConflictError(`VM name is already used by a saved config: ${vmName}`);
   }
 }
 
@@ -309,6 +273,34 @@ export function createApp(deps = defaultDependencies) {
     }),
   );
 
+  // VM Configs (Definitions) - these are templates, not running VMs
+  app.get(
+    '/api/configs',
+    asyncRoute(async (_request, response) => {
+      if (!deps.isDatabaseAvailable()) {
+        const error = new Error('VM templates not available without database connection.');
+        error.statusCode = 503;
+        throw error;
+      }
+      
+      const { listStoredVmDefinitions } = await import('./db.js');
+      const configs = await listStoredVmDefinitions();
+      response.json({ configs });
+    }),
+  );
+
+  app.post(
+    '/api/configs',
+    asyncRoute(async (request, response) => {
+      const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
+      await assertVmNameIsAvailable(deps, payload.config.vm.name);
+      const savedConfig = await deps.saveVmConfig(payload);
+
+      response.status(201).json(savedConfig);
+    }),
+  );
+
+  // Legacy endpoint - kept for backwards compatibility
   app.post(
     '/api/vms/configs',
     asyncRoute(async (request, response) => {
@@ -327,26 +319,10 @@ export function createApp(deps = defaultDependencies) {
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload, { persist: !jobService });
       
-      // Enqueue job for asynchronous provisioning
       if (!jobService) {
-        // Fallback to synchronous provisioning if job service unavailable
-        let provisioned;
-        try {
-          provisioned = await deps.createVm(savedConfig.configPath);
-        } catch (error) {
-          try {
-            await deps.deleteSavedConfigArtifacts(savedConfig);
-          } catch (cleanupError) {
-            console.error(cleanupError.message || cleanupError);
-          }
-          throw error;
-        }
-
-        response.status(201).json({
-          ...savedConfig,
-          provisioned,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM provisioning requires database connection.');
+        error.statusCode = 503;
+        throw error;
       }
       
       // Enqueue job
@@ -383,28 +359,10 @@ export function createApp(deps = defaultDependencies) {
         throw createConflictError(`Stored config name mismatch for VM: ${request.params.name}`);
       }
 
-      const vm = await deps.inspectVm(request.params.name).catch((error) => {
-        if (error?.statusCode === 404) {
-          return null;
-        }
-
-        throw error;
-      });
-
-      if (vm?.exists) {
-        throw createConflictError(`VM name is already in use by a live VM: ${request.params.name}`);
-      }
-
-      // Enqueue job for asynchronous provisioning
       if (!jobService) {
-        // Fallback to synchronous provisioning if job service unavailable
-        const provisioned = await deps.createVm(storedConfig.configPath);
-        response.status(201).json({
-          name: request.params.name,
-          configPath: storedConfig.configPath,
-          provisioned,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM provisioning requires database connection.');
+        error.statusCode = 503;
+        throw error;
       }
       
       // Enqueue job
@@ -447,20 +405,56 @@ export function createApp(deps = defaultDependencies) {
     }),
   );
 
+  // Get VM state - combines original config + current runtime state
+  app.get(
+    '/api/vms/:name/state',
+    asyncRoute(async (request, response) => {
+      if (!deps.isDatabaseAvailable()) {
+        const error = new Error('VM state not available without database connection.');
+        error.statusCode = 503;
+        throw error;
+      }
+      
+      const vmName = request.params.name;
+      const { loadStoredVmDefinitionByName, loadStoredVmRuntimeState } = await import('./db.js');
+      
+      // Load original VM definition (creation config)
+      const vmDefinition = await loadStoredVmDefinitionByName(vmName);
+      if (!vmDefinition) {
+        const error = new Error(`VM definition not found: ${vmName}`);
+        error.statusCode = 404;
+        throw error;
+      }
+      
+      // Load current runtime state (may be null if VM never started)
+      const runtimeState = await loadStoredVmRuntimeState(vmName);
+      
+      response.json({
+        vm_name: vmName,
+        original_config: {
+          ...vmDefinition,
+          label: 'Original Creation Config',
+          note: 'This is the configuration used when the VM was created. Runtime state may drift from this.',
+        },
+        runtime_state: runtimeState || {
+          state: null,
+          observed_at: null,
+          observation_source: null,
+          note: 'No runtime state available. VM may not have been started yet.',
+        },
+      });
+    }),
+  );
+
   app.delete(
     '/api/vms/:name',
     asyncRoute(async (request, response) => {
       await requireStoredConfig(deps, request.params.name);
       
-      // Enqueue job for asynchronous deletion
       if (!jobService) {
-        // Fallback to synchronous deletion if job service unavailable
-        const destroyed = await deps.destroyVm(request.params.name);
-        response.json({
-          name: request.params.name,
-          destroyed,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
       
       const job = await jobService.enqueueVmDestroyJob(request.params.name);
@@ -479,12 +473,9 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
 
       if (!jobService) {
-        const started = await deps.startVm(request.params.name);
-        response.json({
-          name: request.params.name,
-          started,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
 
       const job = await jobService.enqueueVmStartJob(request.params.name);
@@ -502,12 +493,9 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
 
       if (!jobService) {
-        const stopped = await deps.stopVm(request.params.name);
-        response.json({
-          name: request.params.name,
-          stopped,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
 
       const job = await jobService.enqueueVmStopJob(request.params.name);
@@ -527,17 +515,10 @@ export function createApp(deps = defaultDependencies) {
       await assertVmNameIsAvailable(deps, payload.config.vm.name);
       const savedConfig = await deps.saveVmConfig(payload, { persist: !jobService });
       
-      // Enqueue job for asynchronous cloning
       if (!jobService) {
-        // Fallback to synchronous cloning if job service unavailable
-        const cloned = await deps.cloneVm(request.params.name, savedConfig.configPath);
-
-        response.status(201).json({
-          sourceName: request.params.name,
-          ...savedConfig,
-          cloned,
-        });
-        return;
+        const error = new Error('Job queue unavailable. VM cloning requires database connection.');
+        error.statusCode = 503;
+        throw error;
       }
       
       // Enqueue job
@@ -584,16 +565,10 @@ export function createApp(deps = defaultDependencies) {
       );
       const savedConfig = await deps.saveVmConfig(preparedPayload, { overwrite: true, persist: !jobService });
       
-      // Enqueue job for asynchronous reconciliation
       if (!jobService) {
-        // Fallback to synchronous reconciliation if job service unavailable
-        await deps.reconcileVmNetworking({ policyOnly: true });
-        response.json({
-          vmName: request.params.name,
-          configPath: savedConfig.configPath,
-          config: savedConfig.config,
-        });
-        return;
+        const error = new Error('Job queue unavailable. Policy updates require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
       
       // Enqueue job
@@ -630,12 +605,9 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
 
       if (!jobService) {
-        const snapshot = await deps.createVmSnapshot(request.params.name);
-        response.status(201).json({
-          name: request.params.name,
-          snapshot,
-        });
-        return;
+        const error = new Error('Job queue unavailable. Snapshot operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
 
       const job = await jobService.enqueueVmSnapshotCreateJob(request.params.name);
@@ -653,13 +625,9 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
 
       if (!jobService) {
-        const restored = await deps.restoreVmSnapshot(request.params.name, request.params.snapshotId);
-        response.json({
-          name: request.params.name,
-          snapshotId: request.params.snapshotId,
-          restored,
-        });
-        return;
+        const error = new Error('Job queue unavailable. Snapshot operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
 
       const job = await jobService.enqueueVmSnapshotRestoreJob(
@@ -681,13 +649,9 @@ export function createApp(deps = defaultDependencies) {
       await requireStoredConfig(deps, request.params.name);
 
       if (!jobService) {
-        const deleted = await deps.deleteVmSnapshot(request.params.name, request.params.snapshotId);
-        response.json({
-          name: request.params.name,
-          snapshotId: request.params.snapshotId,
-          deleted,
-        });
-        return;
+        const error = new Error('Job queue unavailable. Snapshot operations require database connection.');
+        error.statusCode = 503;
+        throw error;
       }
 
       const job = await jobService.enqueueVmSnapshotDeleteJob(
@@ -700,29 +664,6 @@ export function createApp(deps = defaultDependencies) {
         job_id: job.id,
         status: job.status,
       });
-    }),
-  );
-
-  app.get(
-    '/api/vms/:name/logs',
-    asyncRoute(async (request, response) => {
-      await requireStoredConfig(deps, request.params.name);
-      const lines = parseLines(request.query.lines, 200);
-      const log = await deps.readVmLog(request.params.name, lines);
-      response.json({
-        name: request.params.name,
-        lines,
-        log,
-      });
-    }),
-  );
-
-  app.get(
-    '/api/vms/:name/logs/stream',
-    asyncRoute(async (request, response) => {
-      await requireStoredConfig(deps, request.params.name);
-      const lines = parseLines(request.query.lines, 100);
-      await deps.streamVmLog(request.params.name, response, lines);
     }),
   );
 
@@ -783,6 +724,52 @@ export function createApp(deps = defaultDependencies) {
       const events = await jobService.getJobEvents(jobId, limit);
       
       response.json({ events });
+    }),
+  );
+
+  // VM Logs endpoints (database-backed)
+  app.get(
+    '/api/vms/:name/logs',
+    asyncRoute(async (request, response) => {
+      if (!deps.isDatabaseAvailable()) {
+        const error = new Error('VM logs not available without database connection.');
+        error.statusCode = 404;
+        throw error;
+      }
+      
+      const vmName = request.params.name;
+      const { getVmLogSnapshot } = await import('./db.js');
+      
+      const logSnapshot = await getVmLogSnapshot(vmName);
+      
+      if (!logSnapshot) {
+        const error = new Error(`VM logs not available for: ${vmName}. Worker must collect logs first.`);
+        error.statusCode = 404;
+        throw error;
+      }
+      
+      response.json({
+        vm_name: vmName,
+        snapshot_at: logSnapshot.snapshot_at,
+        line_count: logSnapshot.line_count,
+        log_content: logSnapshot.log_content,
+        collected_by: logSnapshot.collected_by,
+      });
+    }),
+  );
+
+  app.get(
+    '/api/logs',
+    asyncRoute(async (request, response) => {
+      if (!deps.isDatabaseAvailable()) {
+        const error = new Error('VM logs not available without database connection.');
+        error.statusCode = 404;
+        throw error;
+      }
+      
+      const { listVmLogSnapshots } = await import('./db.js');
+      const snapshots = await listVmLogSnapshots();
+      response.json({ snapshots });
     }),
   );
 

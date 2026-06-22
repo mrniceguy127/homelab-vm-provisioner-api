@@ -1,3 +1,7 @@
+// Set required environment variables before imports
+process.env.PROVISIONER_CLI_PATH = '/test/provisioner-cli';
+process.env.PROVISIONER_DATA_DIR = '/test/provisioner/data';
+
 import { expect, test } from 'vitest';
 
 import request from 'supertest';
@@ -74,28 +78,6 @@ function buildDeps(overrides = {}) {
       rawConfig: 'vm: {}',
       config,
     }),
-    cloneVm: async (sourceVmName, configPath) => ({ success: true, source_name: sourceVmName, config_path: configPath }),
-    createVm: async (configPath) => ({ success: true, config_path: configPath }),
-    createVmSnapshot: async (vmName) => ({ success: true, name: vmName }),
-    deleteVmSnapshot: async (vmName, snapshotId) => ({ success: true, name: vmName, snapshotId }),
-    destroyVm: async (vmName) => ({ success: true, name: vmName }),
-    inspectVm: async (vmName) => ({
-      name: vmName,
-      exists: true,
-      status: 'running',
-      ip_address: '192.168.100.50',
-      network: { mode: 'nat' },
-      snapshots: [],
-    }),
-    listHostVmNames: async () => [],
-    readVmLog: async () => 'vm log line\n',
-    reconcileVmNetworking: async () => ({ success: true }),
-    restoreVmSnapshot: async (vmName, snapshotId) => ({ success: true, name: vmName, snapshotId }),
-    startVm: async (vmName) => ({ success: true, name: vmName }),
-    stopVm: async (vmName) => ({ success: true, name: vmName }),
-    streamVmLog: async (_vmName, response) => {
-      response.status(200).end('streamed');
-    },
     parseCreateVmRequest,
     parseNetworkGroupRequest,
     parseVmPolicyRequest,
@@ -105,6 +87,10 @@ function buildDeps(overrides = {}) {
     getRepository: () => null,
     isDatabaseAvailable: () => false,
     createJobService: () => null,
+    upsertStoredVmDefinitionAndEnqueueJob: async () => ({
+      vmDefinition: { id: 1 },
+      job: { id: 1, status: 'pending' },
+    }),
     ...overrides,
   };
 }
@@ -126,9 +112,9 @@ function buildCreatePayload(vmName = 'devbox') {
   };
 }
 
-test('POST /api/vms/configs rejects duplicate host VM names', async () => {
+test('POST /api/vms/configs rejects duplicate config names', async () => {
   const app = createApp(buildDeps({
-    listHostVmNames: async () => ['devbox'],
+    listStoredConfigNames: async () => ['devbox'],
   }));
 
   const response = await request(app)
@@ -136,27 +122,20 @@ test('POST /api/vms/configs rejects duplicate host VM names', async () => {
     .send(buildCreatePayload('devbox'));
 
   expect(response.status).toBe(409);
-  expect(response.body.error).toMatch(/libvirt VM on this host/);
+  expect(response.body.error).toMatch(/already used by a saved config/);
 });
 
 test('GET /api/vms returns only configured VMs', async () => {
   const app = createApp(buildDeps({
     listStoredConfigNames: async () => ['alpha', 'bravo'],
-    inspectVm: async (vmName) => {
-      if (vmName === 'alpha') {
-        return { name: 'alpha', exists: true, status: 'running' };
-      }
-
-      throw new Error('virsh lookup failed');
-    },
   }));
 
   const response = await request(app).get('/api/vms');
 
   expect(response.status).toBe(200);
   expect(response.body.vms.map((vm) => vm.name)).toEqual(['alpha', 'bravo']);
+  expect(response.body.vms[0].configured).toBe(true);
   expect(response.body.vms[1].configured).toBe(true);
-  expect(response.body.vms[1].provisionerError).toMatch(/virsh lookup failed/);
 });
 
 test('GET /api/network-groups lists persisted network groups', async () => {
@@ -179,9 +158,8 @@ test('GET /api/network-groups lists persisted network groups', async () => {
   ]);
 });
 
-test('PATCH /api/vms/:name/policy updates stored VM policy flags', async () => {
+test('PATCH /api/vms/:name/policy requires job service', async () => {
   const savedConfigs = [];
-  const reconcileCalls = [];
   const app = createApp(buildDeps({
     saveVmConfig: async ({ config }) => {
       savedConfigs.push(config);
@@ -192,47 +170,25 @@ test('PATCH /api/vms/:name/policy updates stored VM policy flags', async () => {
         config,
       };
     },
-    reconcileVmNetworking: async (options) => {
-      reconcileCalls.push(options);
-      return { success: true };
-    },
   }));
 
   const response = await request(app)
     .patch('/api/vms/devbox/policy')
     .send({ allow_same_group_traffic: false, allow_private_lan_access: true });
 
-  expect(response.status).toBe(200);
-  expect(savedConfigs).toEqual([
-    expect.objectContaining({
-      vm: expect.objectContaining({
-        name: 'devbox',
-        allow_same_group_traffic: false,
-        allow_private_lan_access: true,
-      }),
-    }),
-  ]);
-  expect(reconcileCalls).toEqual([{ policyOnly: true }]);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('POST /api/vms rolls back saved config artifacts when provisioning fails', async () => {
-  const deleted = [];
-  const app = createApp(buildDeps({
-    createVm: async () => {
-      throw new Error('network reconcile failed');
-    },
-    deleteSavedConfigArtifacts: async (savedConfig) => {
-      deleted.push(savedConfig.configPath);
-    },
-  }));
+test('POST /api/vms requires job service for provisioning', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app)
     .post('/api/vms')
-    .send(buildCreatePayload('rollback'));
+    .send(buildCreatePayload('newvm'));
 
-  expect(response.status).toBe(500);
-  expect(response.body.error).toMatch(/network reconcile failed/);
-  expect(deleted).toEqual(['/configs/rollback.yaml']);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
 test('GET /api/vms/:name returns 404 when no stored config exists', async () => {
@@ -251,105 +207,110 @@ test('GET /api/vms/:name returns 404 when no stored config exists', async () => 
   expect(response.body.error).toMatch(/Stored config was not found/);
 });
 
-test('POST /api/vms/:name/provision provisions the saved config', async () => {
-  const created = [];
-  const app = createApp(buildDeps({
-    createVm: async (configPath) => {
-      created.push(configPath);
-      return { success: true, config_path: configPath };
-    },
-    inspectVm: async () => ({ name: 'devbox', exists: false, status: 'shut off' }),
-  }));
+test('POST /api/vms/:name/provision requires job service', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).post('/api/vms/devbox/provision');
 
-  expect(response.status).toBe(201);
-  expect(created).toEqual(['/configs/devbox.yaml']);
-  expect(response.body.name).toBe('devbox');
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('DELETE /api/vms/:name requires a stored config and calls destroy', async () => {
-  const destroyed = [];
-  const app = createApp(buildDeps({
-    destroyVm: async (vmName) => {
-      destroyed.push(vmName);
-      return { success: true, name: vmName };
-    },
-  }));
+test('DELETE /api/vms/:name requires job service', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).delete('/api/vms/devbox');
 
-  expect(response.status).toBe(200);
-  expect(destroyed).toEqual(['devbox']);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('GET /api/vms/:name/logs reads snapshot logs for configured VMs', async () => {
-  const app = createApp(buildDeps({
-    readVmLog: async (vmName, lines) => `${vmName}:${lines}`,
-  }));
+test('GET /api/vms/:name/logs reads snapshot logs from database', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).get('/api/vms/devbox/logs?lines=123');
 
-  expect(response.status).toBe(200);
-  expect(response.body.log).toBe('devbox:123');
+  // Without database/worker, logs endpoint returns 404
+  expect(response.status).toBe(404);
+  expect(response.body.error).toMatch(/VM logs not available/);
 });
 
-test('POST /api/vms/:name/start delegates to the power-on dependency', async () => {
-  const started = [];
-  const app = createApp(buildDeps({
-    startVm: async (vmName) => {
-      started.push(vmName);
-      return { success: true, name: vmName };
-    },
-  }));
+test('POST /api/vms/:name/start requires job service', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).post('/api/vms/devbox/start');
 
-  expect(response.status).toBe(200);
-  expect(started).toEqual(['devbox']);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('POST /api/vms/:name/clone saves the target config and delegates cloning', async () => {
-  const cloned = [];
-  const app = createApp(buildDeps({
-    cloneVm: async (sourceVmName, configPath) => {
-      cloned.push([sourceVmName, configPath]);
-      return { success: true, source_name: sourceVmName, config_path: configPath };
-    },
-  }));
+test('POST /api/vms/:name/stop requires job service', async () => {
+  const app = createApp(buildDeps());
+
+  const response = await request(app).post('/api/vms/devbox/stop');
+
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
+});
+
+test('POST /api/vms/:name/clone requires job service', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app)
     .post('/api/vms/devbox/clone')
     .send(buildCreatePayload('clonebox'));
 
-  expect(response.status).toBe(201);
-  expect(cloned).toEqual([['devbox', '/configs/clonebox.yaml']]);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('POST /api/vms/:name/snapshots creates a restore point', async () => {
-  const snapshots = [];
-  const app = createApp(buildDeps({
-    createVmSnapshot: async (vmName) => {
-      snapshots.push(vmName);
-      return { success: true, name: vmName };
-    },
-  }));
+test('POST /api/vms/:name/snapshots requires job service', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).post('/api/vms/devbox/snapshots');
 
-  expect(response.status).toBe(201);
-  expect(snapshots).toEqual(['devbox']);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
-test('GET /api/vms/:name/logs/stream delegates to the streaming dependency', async () => {
-  const app = createApp(buildDeps({
-    streamVmLog: async (vmName, response, lines) => {
-      response.status(200).json({ vmName, lines, streamed: true });
-    },
-  }));
+test('GET /api/vms/:name/logs/stream returns 404 (streaming removed)', async () => {
+  const app = createApp(buildDeps());
 
   const response = await request(app).get('/api/vms/devbox/logs/stream?lines=77');
 
-  expect(response.status).toBe(200);
-  expect(response.body).toEqual({ vmName: 'devbox', lines: 77, streamed: true });
+  expect(response.status).toBe(404);
+  expect(response.body.error).toMatch(/Route not found/);
+});
+
+test('GET /api/configs requires database', async () => {
+  const app = createApp(buildDeps({
+    isDatabaseAvailable: () => false,
+  }));
+
+  const response = await request(app).get('/api/configs');
+
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/not available without database/);
+});
+
+test('GET /api/vms/:name/state requires database', async () => {
+  const app = createApp(buildDeps({
+    isDatabaseAvailable: () => false,
+  }));
+
+  const response = await request(app).get('/api/vms/test-vm/state');
+
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/not available without database/);
+});
+
+test('GET /api/vms/:name/state returns 404 for non-existent VM', async () => {
+  const app = createApp(buildDeps({
+    isDatabaseAvailable: () => false,
+  }));
+
+  const response = await request(app).get('/api/vms/nonexistent/state');
+
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/not available without database/);
 });

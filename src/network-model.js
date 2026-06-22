@@ -1,10 +1,5 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 
-import yaml from 'js-yaml';
-
-import { configRoot, ensureRuntimeDirectories, provisionerDataRoot, provisionerRoot } from './config-store.js';
 import {
   listStoredNetworkGroups,
   listStoredUsers,
@@ -21,12 +16,6 @@ export const DEFAULT_NETWORK_GROUP_PREFIX_LENGTH = Number.parseInt(
 );
 export const DEFAULT_ADMIN_USER_ID = 'user-admin';
 export const DEFAULT_ADMIN_USERNAME = process.env.HLVMP_DEFAULT_ADMIN_USERNAME || 'admin';
-
-export const metadataRoot = path.join(provisionerDataRoot, 'vm', 'metadata');
-export const usersStorePath = path.join(metadataRoot, 'users.json');
-export const networkGroupsStorePath = path.join(metadataRoot, 'network-groups.json');
-export const stateRoot = path.join(provisionerDataRoot, 'vm', 'state');
-export const legacyStateRoot = path.join(provisionerRoot, '.build');
 
 /**
  * Convert an IPv4 address into a 32-bit unsigned integer.
@@ -192,105 +181,14 @@ export function buildLibvirtNetworkName(ownerUserId, groupName, networkGroupId) 
 }
 
 /**
- * Ensure metadata storage directories exist.
+ * Load one VM state record when present (legacy stub).
+ * API uses database for state, not files.
  *
- * @returns {Promise<void>} Resolves when directories exist.
+ * @param {string} _vmName - VM name (unused).
+ * @returns {Promise<object>} Empty object.
  */
-export async function ensureMetadataDirectories() {
-  await ensureRuntimeDirectories();
-  await fs.mkdir(metadataRoot, { recursive: true });
-}
-
-async function readJsonStore(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function readYamlFileIfExists(filePath) {
-  try {
-    return yaml.load(await fs.readFile(filePath, 'utf8')) || {};
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return null;
-    }
-    throw error;
-  }
-}
-
-/**
- * List all stored VM configs.
- *
- * @returns {Promise<Array<{vmName:string,configPath:string,config:object}>>} Stored config entries.
- */
-export async function loadStoredConfigs() {
-  const configs = [];
-  const seenVmNames = new Set();
-
-  await ensureRuntimeDirectories();
-
-  try {
-    const entries = await fs.readdir(configRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.yaml')) {
-        continue;
-      }
-
-      const configPath = path.join(configRoot, entry.name);
-      const config = yaml.load(await fs.readFile(configPath, 'utf8')) || {};
-      const vmName = String(config?.vm?.name || entry.name.replace(/\.ya?ml$/, '')).trim();
-      configs.push({ vmName, configPath, config });
-      seenVmNames.add(vmName);
-    }
-  } catch (error) {
-    if (!error || error.code !== 'ENOENT') {
-      throw error;
-    }
-  }
-
-  const vmDefinitions = await listStoredVmDefinitions().catch(() => []);
-  for (const vmDefinition of vmDefinitions) {
-    if (seenVmNames.has(vmDefinition.vm_name)) {
-      continue;
-    }
-
-    configs.push({
-      vmName: vmDefinition.vm_name,
-      configPath: path.join(configRoot, `${vmDefinition.vm_name}.yaml`),
-      config: vmDefinition.config || {},
-    });
-  }
-
-  return configs.sort((left, right) => left.vmName.localeCompare(right.vmName));
-}
-
-/**
- * Load one VM state record when present.
- *
- * @param {string} vmName - VM name.
- * @returns {Promise<object>} State payload or an empty object.
- */
-export async function loadVmStateRecord(vmName) {
-  const primary = path.join(stateRoot, `${vmName}.yaml`);
-  const legacy = path.join(legacyStateRoot, vmName, 'state.yaml');
-  return (await readYamlFileIfExists(primary)) || (await readYamlFileIfExists(legacy)) || {};
-}
-
-/**
- * Persist a YAML config file.
- *
- * @param {string} configPath - Absolute config path.
- * @param {object} config - Config payload.
- * @returns {Promise<void>} Resolves after the config is written.
- */
-export async function writeStoredConfig(configPath, config) {
-  await fs.writeFile(configPath, yaml.dump(config, { lineWidth: -1 }), 'utf8');
+export async function loadVmStateRecord(_vmName) {
+  return {};
 }
 
 /**
@@ -299,17 +197,8 @@ export async function writeStoredConfig(configPath, config) {
  * @returns {Promise<object[]>} Known users.
  */
 export async function listUsers() {
-  const users = await listStoredUsers();
-  if (users.length > 0) {
-    return users;
-  }
-
-  await ensureMetadataDirectories();
-  const legacyUsers = await readJsonStore(usersStorePath);
-  if (legacyUsers.length > 0) {
-    await Promise.all(legacyUsers.map((user) => upsertStoredUser(user)));
-  }
-  return legacyUsers;
+  // API only uses database - no legacy file migration
+  return await listStoredUsers();
 }
 
 /**
@@ -339,17 +228,8 @@ export async function ensureDefaultUser() {
  * @returns {Promise<object[]>} Known network groups.
  */
 export async function listNetworkGroups() {
-  const networkGroups = await listStoredNetworkGroups();
-  if (networkGroups.length > 0) {
-    return networkGroups;
-  }
-
-  await ensureMetadataDirectories();
-  const legacyNetworkGroups = await readJsonStore(networkGroupsStorePath);
-  if (legacyNetworkGroups.length > 0) {
-    await Promise.all(legacyNetworkGroups.map((group) => upsertStoredNetworkGroup(group)));
-  }
-  return legacyNetworkGroups;
+  // API only uses database - no legacy file migration
+  return await listStoredNetworkGroups();
 }
 
 function networkGroupSignature(group) {
@@ -634,10 +514,10 @@ export function buildManagedNetworkConfig(networkGroup, identity) {
  */
 export async function initializeNetworkModel() {
   const defaultUser = await ensureDefaultUser();
-  const storedConfigs = await loadStoredConfigs();
+  const storedVmDefs = await listStoredVmDefinitions();
   let networkGroups = await listNetworkGroups();
 
-  if (storedConfigs.length === 0 && networkGroups.length === 0) {
+  if (storedVmDefs.length === 0 && networkGroups.length === 0) {
     await ensureDefaultNetworkGroup(defaultUser.id);
     return;
   }
@@ -645,7 +525,8 @@ export async function initializeNetworkModel() {
   const usedMacAddresses = new Set();
   const usedIpAddresses = new Set();
 
-  for (const entry of storedConfigs) {
+  for (const vmDef of storedVmDefs) {
+    const entry = { vmName: vmDef.vm_name, config: vmDef.config };
     const state = await loadVmStateRecord(entry.vmName);
     const ownerUserId = String(entry.config?.vm?.owner_user_id || DEFAULT_ADMIN_USER_ID).trim() || DEFAULT_ADMIN_USER_ID;
     let networkGroup = networkGroups.find((group) => group.id === entry.config?.vm?.network_group_id);
@@ -739,11 +620,12 @@ export async function prepareVmConfigForSave(payload, options = {}) {
     throw new Error('allow_private_lan_access is currently restricted to admin-owned VMs.');
   }
 
-  const storedConfigs = await loadStoredConfigs();
+  const storedVmDefs = await listStoredVmDefinitions();
   const currentVmName = String(vm.name || '').trim();
   const usedMacAddresses = new Set();
   const usedIpAddresses = new Set();
-  for (const entry of storedConfigs) {
+  for (const vmDef of storedVmDefs) {
+    const entry = { vmName: vmDef.vm_name, config: vmDef.config };
     if (entry.vmName === existingVmName || entry.vmName === currentVmName) {
       continue;
     }

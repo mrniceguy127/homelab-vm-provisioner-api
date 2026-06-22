@@ -1,3 +1,7 @@
+// Set required environment variables before imports
+process.env.PROVISIONER_CLI_PATH = '/test/provisioner-cli';
+process.env.PROVISIONER_DATA_DIR = '/test/provisioner/data';
+
 import { expect, test, vi } from 'vitest';
 
 import request from 'supertest';
@@ -222,21 +226,9 @@ test('POST /api/vms enqueues a provision job when jobService is available', asyn
   );
 });
 
-test('POST /api/vms falls back to sync provisioning when jobService is unavailable', async () => {
-  const created = [];
+test('POST /api/vms requires job service (no sync fallback)', async () => {
   const deps = buildDeps({
     isDatabaseAvailable: () => false,
-    saveVmConfig: async ({ config }) => ({
-      vmName: config.vm.name,
-      vmDefinitionId: 42,
-      configPath: `/configs/${config.vm.name}.yaml`,
-      rawConfig: 'vm: {}',
-      config,
-    }),
-    createVm: async (configPath) => {
-      created.push(configPath);
-      return { success: true, config_path: configPath };
-    },
   });
   const app = createApp(deps);
 
@@ -244,14 +236,8 @@ test('POST /api/vms falls back to sync provisioning when jobService is unavailab
     .post('/api/vms')
     .send(buildCreatePayload('sync-vm'));
 
-  expect(response.status).toBe(201);
-  expect(response.body).toMatchObject({
-    vmName: 'sync-vm',
-    configPath: '/configs/sync-vm.yaml',
-    provisioned: { success: true },
-  });
-  
-  expect(created).toEqual(['/configs/sync-vm.yaml']);
+  expect(response.status).toBe(503);
+  expect(response.body.error).toMatch(/Job queue unavailable/);
 });
 
 test('POST /api/vms/:name/provision enqueues a provision job when jobService is available', async () => {

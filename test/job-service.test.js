@@ -334,3 +334,153 @@ test('all enqueue methods attempt worker wakeup', async () => {
   
   wakeWorkerSpy.mockRestore();
 });
+
+test('enqueueVmStartJob enqueues a start job with correct parameters', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 126,
+    type: 'start_vm',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { vmName: 'test-vm' },
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+  });
+  
+  const result = await service.enqueueVmStartJob('test-vm');
+  
+  expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
+    'start_vm',
+    'host-1',
+    { vmName: 'test-vm' },
+    { targetVmId: 'test-vm', maxAttempts: 1 }
+  );
+  
+  expect(result).toEqual(mockJob);
+});
+
+test('enqueueVmStopJob enqueues a stop job with correct parameters', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 127,
+    type: 'stop_vm',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { vmName: 'test-vm' },
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+  });
+  
+  const result = await service.enqueueVmStopJob('test-vm');
+  
+  expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
+    'stop_vm',
+    'host-1',
+    { vmName: 'test-vm' },
+    { targetVmId: 'test-vm', maxAttempts: 1 }
+  );
+  
+  expect(result).toEqual(mockJob);
+});
+
+test('enqueueVmSnapshotCreateJob enqueues a snapshot create job', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 128,
+    type: 'snapshot_create',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { vmName: 'test-vm' },
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+  });
+  
+  const result = await service.enqueueVmSnapshotCreateJob('test-vm');
+  
+  expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
+    'snapshot_create',
+    'host-1',
+    { vmName: 'test-vm' },
+    { targetVmId: 'test-vm', maxAttempts: 1 }
+  );
+  
+  expect(result).toEqual(mockJob);
+});
+
+test('enqueueVmSnapshotRestoreJob enqueues a snapshot restore job', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 129,
+    type: 'snapshot_restore',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { vmName: 'test-vm', snapshotId: 'snap-123' },
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+  });
+  
+  const result = await service.enqueueVmSnapshotRestoreJob('test-vm', 'snap-123');
+  
+  expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
+    'snapshot_restore',
+    'host-1',
+    { vmName: 'test-vm', snapshotId: 'snap-123' },
+    { targetVmId: 'test-vm', maxAttempts: 1 }
+  );
+  
+  expect(result).toEqual(mockJob);
+});
+
+test('enqueueVmSnapshotDeleteJob enqueues a snapshot delete job', async () => {
+  const mockRepo = buildMockRepository();
+  const mockJob = {
+    id: 130,
+    type: 'snapshot_delete',
+    status: 'queued',
+    target_host_id: 'host-1',
+    target_vm_id: 'test-vm',
+    payload: { vmName: 'test-vm', snapshotId: 'snap-123' },
+  };
+  
+  mockRepo.enqueueJob.mockResolvedValue(mockJob);
+  
+  const service = createJobService({
+    repository: mockRepo,
+    hostId: 'host-1',
+  });
+  
+  const result = await service.enqueueVmSnapshotDeleteJob('test-vm', 'snap-123');
+  
+  expect(mockRepo.enqueueJob).toHaveBeenCalledWith(
+    'snapshot_delete',
+    'host-1',
+    { vmName: 'test-vm', snapshotId: 'snap-123' },
+    { targetVmId: 'test-vm', maxAttempts: 1 }
+  );
+  
+  expect(result).toEqual(mockJob);
+});

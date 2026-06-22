@@ -4,6 +4,16 @@ import {
   getRepository,
   isDatabaseAvailable,
   closeDatabase,
+  listStoredUsers,
+  upsertStoredUser,
+  listStoredNetworkGroups,
+  upsertStoredNetworkGroup,
+  listStoredVmDefinitions,
+  loadStoredVmDefinitionByName,
+  listStoredVmRuntimeStates,
+  loadStoredVmRuntimeState,
+  upsertStoredVmRuntimeState,
+  deleteStoredVmRuntimeState,
 } from '../src/db.js';
 
 describe('database client', () => {
@@ -544,6 +554,140 @@ describe('database client', () => {
       await closeDatabase();
       expect(isDatabaseAvailable()).toBe(false);
       expect(getRepository()).toBeNull();
+    });
+  });
+
+  describe('storage helper functions', () => {
+    beforeEach(async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true }),
+      });
+      await initializeDatabase();
+    });
+
+    it('listStoredUsers retrieves users', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ users: [{ id: 'user-1', username: 'testuser' }] }),
+      });
+
+      const users = await listStoredUsers();
+      expect(users).toEqual([{ id: 'user-1', username: 'testuser' }]);
+    });
+
+    it('upsertStoredUser creates or updates user', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ user: { id: 'user-1', username: 'testuser' } }),
+      });
+
+      const user = await upsertStoredUser({ id: 'user-1', username: 'testuser' });
+      expect(user).toEqual({ id: 'user-1', username: 'testuser' });
+    });
+
+    it('listStoredNetworkGroups retrieves network groups', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ networkGroups: [{ id: 'group-1', name: 'test-group' }] }),
+      });
+
+      const groups = await listStoredNetworkGroups();
+      expect(groups).toEqual([{ id: 'group-1', name: 'test-group' }]);
+    });
+
+    it('upsertStoredNetworkGroup creates or updates network group', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ networkGroup: { id: 'group-1', name: 'test-group' } }),
+      });
+
+      const group = await upsertStoredNetworkGroup({ id: 'group-1', name: 'test-group' });
+      expect(group).toEqual({ id: 'group-1', name: 'test-group' });
+    });
+
+    it('listStoredVmDefinitions retrieves VM definitions', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ vmDefinitions: [{ name: 'vm-1' }] }),
+      });
+
+      const vms = await listStoredVmDefinitions();
+      expect(vms).toEqual([{ name: 'vm-1' }]);
+    });
+
+    it('loadStoredVmDefinitionByName retrieves specific VM definition', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ vmDefinition: { name: 'vm-1', cpus: 2 } }),
+      });
+
+      const vm = await loadStoredVmDefinitionByName('vm-1');
+      expect(vm).toEqual({ name: 'vm-1', cpus: 2 });
+    });
+
+    it('listStoredVmRuntimeStates retrieves runtime states', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runtimeStates: [{ vm_name: 'vm-1', status: 'running' }] }),
+      });
+
+      const states = await listStoredVmRuntimeStates();
+      expect(states).toEqual([{ vm_name: 'vm-1', status: 'running' }]);
+    });
+
+    it('loadStoredVmRuntimeState retrieves specific runtime state', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runtimeState: { vm_name: 'vm-1', status: 'running' } }),
+      });
+
+      const state = await loadStoredVmRuntimeState('vm-1');
+      expect(state).toEqual({ vm_name: 'vm-1', status: 'running' });
+    });
+
+    it('loadStoredVmRuntimeState returns null on 404', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'Not found' }),
+        text: async () => '{"error":"Not found"}',
+      });
+
+      const state = await loadStoredVmRuntimeState('missing-vm');
+      expect(state).toBeNull();
+    });
+
+    it('upsertStoredVmRuntimeState updates runtime state', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runtimeState: { vm_name: 'vm-1', status: 'running' } }),
+      });
+
+      const state = await upsertStoredVmRuntimeState('vm-1', { status: 'running' });
+      expect(state).toEqual({ vm_name: 'vm-1', status: 'running' });
+    });
+
+    it('deleteStoredVmRuntimeState removes runtime state', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runtimeState: { vm_name: 'vm-1' } }),
+      });
+
+      const result = await deleteStoredVmRuntimeState('vm-1');
+      expect(result).toEqual({ vm_name: 'vm-1' });
+    });
+
+    it('deleteStoredVmRuntimeState returns null on 404', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'Not found' }),
+        text: async () => '{"error":"Not found"}',
+      });
+
+      const result = await deleteStoredVmRuntimeState('missing-vm');
+      expect(result).toBeNull();
     });
   });
 });
