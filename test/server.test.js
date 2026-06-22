@@ -22,15 +22,11 @@ vi.mock('../src/network-model.js', () => ({
 
 describe('server', () => {
   let originalEnv;
-  let consoleErrorSpy;
   let consoleWarnSpy;
-  let processExitSpy;
 
   beforeEach(() => {
     originalEnv = process.env.PORT;
-    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {});
     vi.clearAllMocks();
     mockApp.listen.mockImplementation((port, callback) => callback && callback());
     mockInitializeDatabase.mockResolvedValue(undefined);
@@ -42,15 +38,15 @@ describe('server', () => {
     vi.restoreAllMocks();
   });
 
-  it('handles error objects without message', async () => {
+  it('warns when network model initialization fails', async () => {
     vi.resetModules();
     mockInitializeNetworkModel.mockRejectedValueOnce({ code: 'ERR_UNKNOWN' });
 
     await import('../src/server.js');
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(consoleErrorSpy).toHaveBeenCalled();
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(consoleWarnSpy).toHaveBeenCalledWith('Network model initialization failed. Using defaults.');
+    expect(mockApp.listen).toHaveBeenCalled();
   });
 
   it('warns when database initialization fails', async () => {

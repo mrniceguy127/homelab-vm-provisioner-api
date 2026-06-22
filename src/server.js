@@ -10,13 +10,19 @@ const port = Number.parseInt(process.env.PORT || '3001', 10);
  * @returns {Promise<void>} Resolves after the server is listening.
  */
 async function main() {
-  await initializeNetworkModel();
-  
-  // Initialize database connection (optional, will warn if DATABASE_URL not set)
+  // Initialize database connection (optional, will warn if not available)
   try {
     await initializeDatabase();
   } catch (error) {
     console.warn('Database initialization failed. Job queue features will be unavailable.');
+    console.warn('Error:', error.message);
+  }
+
+  // Initialize network model (optional, requires database)
+  try {
+    await initializeNetworkModel();
+  } catch (error) {
+    console.warn('Network model initialization failed. Using defaults.');
     console.warn('Error:', error.message);
   }
 
