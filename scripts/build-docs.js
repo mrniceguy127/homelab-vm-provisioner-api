@@ -129,7 +129,6 @@ await fs.mkdir(referenceRoot, { recursive: true });
 await runDocumentation([
   'build',
   'src/app.js',
-  'src/config-store.js',
   'src/privileges.js',
   'src/provisioner.js',
   'src/server.js',

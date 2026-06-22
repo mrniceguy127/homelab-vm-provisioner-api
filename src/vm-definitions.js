@@ -144,8 +144,6 @@ function cloneDefinition(definition) {
 
 /**
  * Save a VM config using DB-backed VM definitions.
- * 
- * This function provides compatibility with the legacy config-store API.
  *
  * @param {{config: object, sshPublicKey?: string, setupScript?: string}} payload - Save request payload.
  * @param {object} [options={}] - Save options.
@@ -214,9 +212,7 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
 }
 
 /**
- * Load one saved VM definition in config-store compatible format.
- * 
- * This function provides compatibility with the legacy config-store API.
+ * Load one saved VM definition from the database.
  *
  * @param {string} vmName - VM name.
  * @returns {Promise<object>} Saved definition metadata and parsed config.
@@ -241,8 +237,6 @@ export async function loadStoredConfig(vmName) {
 
 /**
  * List all saved VM definition names.
- * 
- * This function provides compatibility with the legacy config-store API.
  *
  * @returns {Promise<string[]>} Sorted saved VM names.
  */
@@ -255,8 +249,7 @@ export async function listStoredConfigNames() {
 
 /**
  * Delete VM definition from database.
- * 
- * This function provides compatibility with the legacy config-store API.
+ *
  * For API-managed VMs, this removes the VM definition from the database.
  * There are no file-based artifacts to clean up.
  *
@@ -277,8 +270,6 @@ export async function deleteSavedConfigArtifacts(savedConfig) {
 
 /**
  * Check whether a VM definition exists (alias for vmDefinitionExists).
- * 
- * This function provides compatibility with the legacy config-store API.
  *
  * @param {string} vmName - VM name.
  * @returns {Promise<boolean>} Whether the definition exists.
