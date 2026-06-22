@@ -1,4 +1,4 @@
-import app from './app.js';
+import createApp from './app.js';
 import { initializeDatabase } from './db.js';
 import { initializeNetworkModel } from './network-model.js';
 
@@ -26,12 +26,20 @@ async function main() {
     console.warn('Error:', error.message);
   }
 
+  // Create app AFTER database initialization so job service can be properly initialized
+  const app = createApp();
+
   app.listen(port, () => {
     console.log(`homelab-vm-provisioner-api listening on port ${port}`);
   });
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+export { main };
+
+// Only run if this module is the main entry point
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}

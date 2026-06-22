@@ -788,6 +788,4 @@ export function createApp(deps = defaultDependencies) {
   return app;
 }
 
-const app = createApp();
-
-export default app;
+export default createApp;

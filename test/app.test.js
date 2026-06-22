@@ -6,7 +6,7 @@ import { expect, test } from 'vitest';
 
 import request from 'supertest';
 
-import { createApp } from '../src/app.js';
+import createApp from '../src/app.js';
 import {
   formatValidationError,
   isValidationError,

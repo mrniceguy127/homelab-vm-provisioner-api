@@ -5,11 +5,12 @@ const mockApp = {
   listen: vi.fn((port, callback) => callback && callback()),
 };
 
+const mockCreateApp = vi.fn(() => mockApp);
 const mockInitializeDatabase = vi.fn().mockResolvedValue(undefined);
 const mockInitializeNetworkModel = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../src/app.js', () => ({
-  default: mockApp,
+  default: mockCreateApp,
 }));
 
 vi.mock('../src/db.js', () => ({
@@ -29,6 +30,7 @@ describe('server', () => {
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.clearAllMocks();
     mockApp.listen.mockImplementation((port, callback) => callback && callback());
+    mockCreateApp.mockReturnValue(mockApp);
     mockInitializeDatabase.mockResolvedValue(undefined);
     mockInitializeNetworkModel.mockResolvedValue(undefined);
   });
@@ -42,8 +44,8 @@ describe('server', () => {
     vi.resetModules();
     mockInitializeNetworkModel.mockRejectedValueOnce({ code: 'ERR_UNKNOWN' });
 
-    await import('../src/server.js');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const { main } = await import('../src/server.js');
+    await main();
 
     expect(consoleWarnSpy).toHaveBeenCalledWith('Network model initialization failed. Using defaults.');
     expect(mockApp.listen).toHaveBeenCalled();
@@ -53,8 +55,8 @@ describe('server', () => {
     vi.resetModules();
     mockInitializeDatabase.mockRejectedValueOnce(new Error('Database connection failed'));
 
-    await import('../src/server.js');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const { main } = await import('../src/server.js');
+    await main();
 
     expect(consoleWarnSpy).toHaveBeenCalledWith('Database initialization failed. Job queue features will be unavailable.');
   });
