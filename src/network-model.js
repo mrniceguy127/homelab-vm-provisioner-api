@@ -572,6 +572,9 @@ export async function initializeNetworkModel() {
 
     await upsertStoredVmDefinition({
       vm_name: entry.vmName,
+      owner_user_id: ownerUserId,
+      network_group_id: networkGroup.id,
+      target_host_id: process.env.HOST_ID || 'local',
       config: nextConfig,
     });
   }
