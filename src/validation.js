@@ -164,6 +164,7 @@ const networkGroupRequestSchema = z
     ownerUserId: z.string().trim().min(1),
     name: z.string().trim().min(1),
     profile: z.enum(['private', 'nat', 'isolated_nat', 'bridged']).optional(),
+    subnetCidr: z.string().trim().refine(isIpv4Cidr, 'Must be a valid IPv4 CIDR').optional(),
     bridgeName: z.string().trim().min(1).optional(),
   })
   .strict();

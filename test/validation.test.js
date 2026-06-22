@@ -80,6 +80,27 @@ test('parseNetworkGroupRequest accepts valid network group', () => {
   expect(payload.name).toBe('demo-group');
 });
 
+test('parseNetworkGroupRequest accepts subnetCidr', () => {
+  const payload = parseNetworkGroupRequest({
+    ownerUserId: 'user-123',
+    name: 'demo-group',
+    profile: 'isolated_nat',
+    subnetCidr: '10.80.5.0/28',
+  });
+  expect(payload.subnetCidr).toBe('10.80.5.0/28');
+});
+
+test('parseNetworkGroupRequest rejects invalid subnetCidr', () => {
+  expect(() => {
+    parseNetworkGroupRequest({
+      ownerUserId: 'user-123',
+      name: 'demo-group',
+      profile: 'isolated_nat',
+      subnetCidr: 'not-a-cidr',
+    });
+  }).toThrow();
+});
+
 test('parseVmPolicyRequest accepts valid policy', () => {
   const payload = parseVmPolicyRequest({
     allow_host_access: true,

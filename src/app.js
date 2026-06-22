@@ -16,9 +16,11 @@ import {
 } from './db.js';
 import { createJobService } from './job-service.js';
 import {
+  allocateSubnetFromPool,
   createNetworkGroup,
   listNetworkGroups,
   listUsers,
+  validateNetworkGroupCidr,
 } from './network-model.js';
 import {
   formatValidationError,
@@ -31,10 +33,12 @@ import {
 const defaultDependencies = {
   configPathForVm,
   deleteSavedConfigArtifacts,
+  allocateSubnetFromPool,
   createNetworkGroup,
   listStoredConfigNames,
   listNetworkGroups,
   listUsers,
+  validateNetworkGroupCidr,
   loadStoredConfig,
   prepareVmConfigForSave,
   saveVmConfig,
@@ -245,6 +249,40 @@ export function createApp(deps = defaultDependencies) {
     }),
   );
 
+  app.post(
+    '/api/network-groups/validate-cidr',
+    asyncRoute(async (request, response) => {
+      const { cidr } = request.body;
+      if (!cidr) {
+        const error = new Error('CIDR is required');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      try {
+        const networkGroups = await deps.listNetworkGroups();
+        deps.validateNetworkGroupCidr(cidr, networkGroups);
+        response.json({ valid: true, cidr });
+      } catch (validationError) {
+        response.status(400).json({
+          valid: false,
+          cidr,
+          error: validationError.message,
+        });
+      }
+    }),
+  );
+
+  app.get(
+    '/api/network-groups/suggest-cidr',
+    asyncRoute(async (_request, response) => {
+      const networkGroups = await deps.listNetworkGroups();
+      // Use /29 (8 IPs) as default for suggestions since that's the max allowed
+      const suggestedCidr = deps.allocateSubnetFromPool(networkGroups, undefined, 29);
+      response.json({ cidr: suggestedCidr });
+    }),
+  );
+
   // VM Configs (Definitions) - these are templates, not running VMs
   app.get(
     '/api/configs',
@@ -269,6 +307,37 @@ export function createApp(deps = defaultDependencies) {
       const savedConfig = await deps.saveVmConfig(payload);
 
       response.status(201).json(savedConfig);
+    }),
+  );
+
+  app.put(
+    '/api/configs/:name',
+    asyncRoute(async (request, response) => {
+      const currentName = request.params.name;
+      await requireStoredConfig(deps, currentName);
+      
+      const payload = await deps.prepareVmConfigForSave(deps.parseCreateVmRequest(request.body));
+      const newName = payload.config.vm.name;
+
+      // If name changed, check new name availability
+      if (normalizeVmName(currentName) !== normalizeVmName(newName)) {
+        await assertVmNameIsAvailable(deps, newName);
+        // Delete old config
+        await deps.deleteSavedConfigArtifacts({ vmName: currentName });
+      }
+
+      // Save updated config
+      const savedConfig = await deps.saveVmConfig(payload, { overwrite: true });
+      response.status(200).json(savedConfig);
+    }),
+  );
+
+  app.delete(
+    '/api/configs/:name',
+    asyncRoute(async (request, response) => {
+      await requireStoredConfig(deps, request.params.name);
+      await deps.deleteSavedConfigArtifacts({ vmName: request.params.name });
+      response.status(204).send();
     }),
   );
 

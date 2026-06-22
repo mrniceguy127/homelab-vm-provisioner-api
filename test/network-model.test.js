@@ -76,7 +76,7 @@ test('createNetworkGroup rejects overlapping subnet allocations', async () => {
     ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
     name: 'group-a',
     profile: 'isolated_nat',
-    subnetCidr: '10.80.1.0/28',
+    subnetCidr: '10.80.1.0/29',
   });
 
   await expect(
@@ -84,9 +84,9 @@ test('createNetworkGroup rejects overlapping subnet allocations', async () => {
       ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
       name: 'group-b',
       profile: 'isolated_nat',
-      subnetCidr: '10.80.1.8/29',
+      subnetCidr: '10.80.1.0/30',
     }),
-  ).rejects.toThrow(/overlaps an existing allocation/i);
+  ).rejects.toThrow(/overlaps/i);
 });
 
 test('prepareVmConfigForSave assigns a VM IP inside the selected network-group subnet', async () => {
@@ -96,7 +96,7 @@ test('prepareVmConfigForSave assigns a VM IP inside the selected network-group s
     ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
     name: 'team-a',
     profile: 'isolated_nat',
-    subnetCidr: '10.80.5.0/28',
+    subnetCidr: '10.80.5.0/29',
   });
 
   const prepared = await networkModel.prepareVmConfigForSave({
@@ -114,7 +114,7 @@ test('prepareVmConfigForSave assigns a VM IP inside the selected network-group s
   });
 
   expect(prepared.config.vm.ip_address).toBe('10.80.5.2');
-  expect(prepared.config.network.subnet_cidr).toBe('10.80.5.0/28');
+  expect(prepared.config.network.subnet_cidr).toBe('10.80.5.0/29');
   expect(prepared.config.network.vm_ip).toBe('10.80.5.2');
   expect(prepared.config.vm.mac_address).toMatch(/^52:54:00:/);
 });
@@ -293,3 +293,182 @@ test('createNetworkGroup throws when network group already exists', async () => 
     })
   ).rejects.toThrow(/Network group already exists/);
 });
+
+// TDD: CIDR Validation Tests
+test('validateCidrFormat accepts valid CIDR notation', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  expect(() => networkModel.validateCidrFormat('10.80.0.0/28')).not.toThrow();
+  expect(() => networkModel.validateCidrFormat('192.168.1.0/24')).not.toThrow();
+  expect(() => networkModel.validateCidrFormat('10.0.0.0/29')).not.toThrow();
+});
+
+test('validateCidrFormat rejects invalid CIDR notation', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  expect(() => networkModel.validateCidrFormat('not-a-cidr')).toThrow(/Invalid CIDR format/i);
+  expect(() => networkModel.validateCidrFormat('10.80.0.0')).toThrow(/Invalid CIDR format/i);
+  expect(() => networkModel.validateCidrFormat('10.80.0.0/33')).toThrow(/Invalid CIDR format/i);
+  expect(() => networkModel.validateCidrFormat('256.0.0.0/24')).toThrow(/Invalid CIDR format/i);
+  expect(() => networkModel.validateCidrFormat('10.80.0.1/28')).toThrow(/must be a network address/i);
+});
+
+test('validateCidrSize rejects subnets larger than 8 IPs', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  expect(() => networkModel.validateCidrSize('10.80.0.0/28')).toThrow(/must be at most 8 IP addresses/i);
+  expect(() => networkModel.validateCidrSize('10.80.0.0/24')).toThrow(/must be at most 8 IP addresses/i);
+  expect(() => networkModel.validateCidrSize('10.80.0.0/16')).toThrow(/must be at most 8 IP addresses/i);
+});
+
+test('validateCidrSize accepts subnets with 8 or fewer IPs', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  expect(() => networkModel.validateCidrSize('10.80.0.0/29')).not.toThrow(); // 8 IPs
+  expect(() => networkModel.validateCidrSize('10.80.0.0/30')).not.toThrow(); // 4 IPs
+  expect(() => networkModel.validateCidrSize('10.80.0.0/31')).not.toThrow(); // 2 IPs
+  expect(() => networkModel.validateCidrSize('10.80.0.8/32')).not.toThrow(); // 1 IP
+});
+
+test('validateCidrWithinGlobalPool accepts CIDRs within global pool', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  // Default pool is 10.80.0.0/16
+  expect(() => networkModel.validateCidrWithinGlobalPool('10.80.0.0/29')).not.toThrow();
+  expect(() => networkModel.validateCidrWithinGlobalPool('10.80.255.0/29')).not.toThrow();
+  expect(() => networkModel.validateCidrWithinGlobalPool('10.80.128.0/29')).not.toThrow();
+});
+
+test('validateCidrWithinGlobalPool rejects CIDRs outside global pool', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  // Default pool is 10.80.0.0/16
+  expect(() => networkModel.validateCidrWithinGlobalPool('10.81.0.0/29'))
+    .toThrow(/must be within the global pool/i);
+  expect(() => networkModel.validateCidrWithinGlobalPool('10.79.0.0/29'))
+    .toThrow(/must be within the global pool/i);
+  expect(() => networkModel.validateCidrWithinGlobalPool('192.168.1.0/29'))
+    .toThrow(/must be within the global pool/i);
+});
+
+test('validateCidrWithinGlobalPool accepts custom pool configuration', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  expect(() => networkModel.validateCidrWithinGlobalPool('192.168.100.0/29', '192.168.0.0/16'))
+    .not.toThrow();
+  expect(() => networkModel.validateCidrWithinGlobalPool('192.168.100.0/29', '10.80.0.0/16'))
+    .toThrow(/must be within the global pool/i);
+});
+
+test('validateCidrOverlap detects overlapping CIDRs', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  await networkModel.createNetworkGroup({
+    ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+    name: 'existing-group',
+    profile: 'isolated_nat',
+    subnetCidr: '10.80.1.0/29',
+  });
+  
+  const networkGroups = await networkModel.listNetworkGroups();
+  
+  // Exact overlap
+  expect(() => networkModel.validateCidrOverlap('10.80.1.0/29', networkGroups))
+    .toThrow(/overlaps with existing network group/i);
+  
+  // Partial overlap
+  expect(() => networkModel.validateCidrOverlap('10.80.1.0/28', networkGroups))
+    .toThrow(/overlaps with existing network group/i);
+  expect(() => networkModel.validateCidrOverlap('10.80.1.4/30', networkGroups))
+    .toThrow(/overlaps with existing network group/i);
+});
+
+test('validateCidrOverlap accepts non-overlapping CIDRs', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  await networkModel.createNetworkGroup({
+    ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+    name: 'existing-group',
+    profile: 'isolated_nat',
+    subnetCidr: '10.80.1.0/29',
+  });
+  
+  const networkGroups = await networkModel.listNetworkGroups();
+  
+  expect(() => networkModel.validateCidrOverlap('10.80.2.0/29', networkGroups))
+    .not.toThrow();
+  expect(() => networkModel.validateCidrOverlap('10.80.1.8/29', networkGroups))
+    .not.toThrow();
+});
+
+test('validateNetworkGroupCidr performs all validations', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  await networkModel.createNetworkGroup({
+    ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+    name: 'existing-group',
+    profile: 'isolated_nat',
+    subnetCidr: '10.80.1.0/29',
+  });
+  
+  const networkGroups = await networkModel.listNetworkGroups();
+  
+  // Valid CIDR
+  expect(() => networkModel.validateNetworkGroupCidr('10.80.2.0/29', networkGroups))
+    .not.toThrow();
+  
+  // Invalid format
+  expect(() => networkModel.validateNetworkGroupCidr('not-a-cidr', networkGroups))
+    .toThrow(/Invalid CIDR format/i);
+  
+  // Too large
+  expect(() => networkModel.validateNetworkGroupCidr('10.80.3.0/28', networkGroups))
+    .toThrow(/must be at most 8 IP addresses/i);
+  
+  // Outside global pool
+  expect(() => networkModel.validateNetworkGroupCidr('192.168.1.0/29', networkGroups))
+    .toThrow(/must be within the global pool/i);
+  
+  // Overlapping
+  expect(() => networkModel.validateNetworkGroupCidr('10.80.1.0/29', networkGroups))
+    .toThrow(/overlaps with existing network group/i);
+});
+
+test('createNetworkGroup enforces CIDR validation for custom subnets', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  // Too large
+  await expect(
+    networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name: 'test-large',
+      profile: 'isolated_nat',
+      subnetCidr: '10.80.10.0/28',
+    })
+  ).rejects.toThrow(/must be at most 8 IP addresses/i);
+  
+  // Outside global pool
+  await expect(
+    networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name: 'test-outside',
+      profile: 'isolated_nat',
+      subnetCidr: '192.168.1.0/29',
+    })
+  ).rejects.toThrow(/must be within the global pool/i);
+  
+  // Invalid format
+  await expect(
+    networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name: 'test-invalid',
+      profile: 'isolated_nat',
+      subnetCidr: 'invalid',
+    })
+  ).rejects.toThrow(/Invalid CIDR format/i);
+});
+

@@ -100,6 +100,123 @@ export function cidrContainsIp(cidr, ipAddress) {
 }
 
 /**
+ * Validate CIDR format and ensure it's a proper network address.
+ *
+ * @param {string} cidr - CIDR to validate.
+ * @throws {Error} If CIDR format is invalid or not a network address.
+ */
+export function validateCidrFormat(cidr) {
+  if (!cidr || typeof cidr !== 'string') {
+    throw new Error('Invalid CIDR format: CIDR must be a non-empty string');
+  }
+
+  const trimmed = cidr.trim();
+  if (!trimmed.includes('/')) {
+    throw new Error('Invalid CIDR format: Missing prefix length (e.g., /24)');
+  }
+
+  const [address, prefixLengthText] = trimmed.split('/');
+  const parts = address.split('.');
+  
+  if (parts.length !== 4) {
+    throw new Error('Invalid CIDR format: IPv4 address must have 4 octets');
+  }
+
+  for (const part of parts) {
+    const octet = Number.parseInt(part, 10);
+    if (Number.isNaN(octet) || octet < 0 || octet > 255) {
+      throw new Error(`Invalid CIDR format: Invalid octet value '${part}'`);
+    }
+  }
+
+  const prefixLength = Number.parseInt(prefixLengthText, 10);
+  if (Number.isNaN(prefixLength) || prefixLength < 0 || prefixLength > 32) {
+    throw new Error(`Invalid CIDR format: Prefix length must be 0-32, got '${prefixLengthText}'`);
+  }
+
+  // Ensure it's a network address (not a host address)
+  const network = parseCidr(trimmed);
+  if (network.address !== address) {
+    throw new Error(
+      `Invalid CIDR format: ${trimmed} must be a network address, did you mean ${network.cidr}?`
+    );
+  }
+}
+
+/**
+ * Validate that CIDR subnet size is at most 8 IP addresses (/29 or smaller).
+ *
+ * @param {string} cidr - CIDR to validate.
+ * @throws {Error} If subnet is larger than 8 IPs.
+ */
+export function validateCidrSize(cidr) {
+  const network = parseCidr(cidr);
+  const ipCount = (network.broadcastInt - network.networkInt + 1) >>> 0;
+  
+  if (ipCount > 8) {
+    throw new Error(
+      `Network group subnet must be at most 8 IP addresses (/29 or smaller). ` +
+      `${cidr} contains ${ipCount} addresses. Try /29 (8 IPs), /30 (4 IPs), /31 (2 IPs), or /32 (1 IP).`
+    );
+  }
+}
+
+/**
+ * Validate that CIDR is within the global network pool.
+ *
+ * @param {string} cidr - CIDR to validate.
+ * @param {string} [poolCidr=DEFAULT_NETWORK_POOL_CIDR] - Global pool CIDR.
+ * @throws {Error} If CIDR is outside the global pool.
+ */
+export function validateCidrWithinGlobalPool(cidr, poolCidr = DEFAULT_NETWORK_POOL_CIDR) {
+  const network = parseCidr(cidr);
+  const pool = parseCidr(poolCidr);
+  
+  const isWithinPool = 
+    network.networkInt >= pool.networkInt && 
+    network.broadcastInt <= pool.broadcastInt;
+  
+  if (!isWithinPool) {
+    throw new Error(
+      `Network group subnet must be within the global pool ${poolCidr}. ` +
+      `${cidr} is outside this range.`
+    );
+  }
+}
+
+/**
+ * Validate that CIDR does not overlap with existing network groups.
+ *
+ * @param {string} cidr - CIDR to validate.
+ * @param {Array<{subnet_cidr:string,name:string}>} networkGroups - Existing network groups.
+ * @throws {Error} If CIDR overlaps with an existing network group.
+ */
+export function validateCidrOverlap(cidr, networkGroups) {
+  for (const group of networkGroups) {
+    if (group.subnet_cidr && cidrsOverlap(cidr, group.subnet_cidr)) {
+      throw new Error(
+        `Network group subnet overlaps with existing network group '${group.name}' (${group.subnet_cidr})`
+      );
+    }
+  }
+}
+
+/**
+ * Perform all network group CIDR validations.
+ *
+ * @param {string} cidr - CIDR to validate.
+ * @param {Array<{subnet_cidr:string,name:string}>} networkGroups - Existing network groups.
+ * @param {string} [poolCidr=DEFAULT_NETWORK_POOL_CIDR] - Global pool CIDR.
+ * @throws {Error} If any validation fails.
+ */
+export function validateNetworkGroupCidr(cidr, networkGroups, poolCidr = DEFAULT_NETWORK_POOL_CIDR) {
+  validateCidrFormat(cidr);
+  validateCidrSize(cidr);
+  validateCidrWithinGlobalPool(cidr, poolCidr);
+  validateCidrOverlap(cidr, networkGroups);
+}
+
+/**
  * Build default gateway and DHCP range values for a subnet.
  *
  * @param {string} subnetCidr - Allocated subnet.
@@ -302,7 +419,14 @@ export async function createNetworkGroup(input) {
   const subnetCidr = profile === 'bridged'
     ? null
     : (input.subnetCidr || allocateSubnetFromPool(networkGroups));
-  if (subnetCidr) {
+  
+  // Validate custom subnet CIDRs
+  if (subnetCidr && input.subnetCidr) {
+    validateNetworkGroupCidr(subnetCidr, networkGroups);
+  }
+  
+  // Legacy overlap check for auto-allocated subnets (already validated above for custom)
+  if (subnetCidr && !input.subnetCidr) {
     for (const group of networkGroups) {
       if (group.subnet_cidr && cidrsOverlap(group.subnet_cidr, subnetCidr)) {
         throw new Error(`Network-group subnet overlaps an existing allocation: ${subnetCidr}`);
