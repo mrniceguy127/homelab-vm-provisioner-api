@@ -91,20 +91,16 @@ export async function assertVmNameIsAvailable(deps, vmName) {
 }
 
 /**
- * Inspect one configured VM and preserve configuration-first filtering.
+ * Build a VM response object from stored config and runtime state.
  *
- * @param {object} deps - Dependency bag for VM inspection.
- * @param {Function} deps.inspectVm - Returns live VM details.
- * @param {Function} deps.configPathForVm - Resolves saved config paths.
- * @param {string} vmName - Configured VM name.
- * @returns {Promise<object>} VM details merged with configuration metadata.
+ * @param {string} vmName - VM name.
+ * @param {object} storedConfig - Stored VM configuration.
+ * @param {object|null} runtimeState - Runtime state from database (or null).
+ * @returns {object} VM response object.
  */
-export async function inspectConfiguredVm(deps, vmName) {
-  const storedConfig = await deps.loadStoredConfig(vmName);
+function buildVmResponse(vmName, storedConfig, runtimeState) {
   const storedVm = storedConfig.config?.vm || {};
   const storedNetwork = storedConfig.config?.network || {};
-  const runtimeStateRecord = await deps.loadStoredVmRuntimeState(vmName);
-  const runtimeState = runtimeStateRecord?.state || null;
 
   if (runtimeState) {
     return {
@@ -130,48 +126,24 @@ export async function inspectConfiguredVm(deps, vmName) {
     };
   }
 
-  try {
-    const vm = await deps.inspectVm(vmName);
-    return {
-      ...vm,
-      owner_user_id: vm.owner_user_id || storedVm.owner_user_id || null,
-      network_group_id: vm.network_group_id || storedVm.network_group_id || null,
-      allow_same_group_traffic: vm.allow_same_group_traffic ?? storedVm.allow_same_group_traffic ?? true,
-      allow_host_access: vm.allow_host_access ?? storedVm.allow_host_access ?? true,
-      allow_private_lan_access: vm.allow_private_lan_access ?? storedVm.allow_private_lan_access ?? false,
-      internet_access: vm.internet_access ?? storedVm.internet_access ?? true,
-      mac_address: vm.mac_address || storedVm.mac_address || storedNetwork.mac || null,
-      ip_address: vm.ip_address || storedVm.ip_address || storedNetwork.vm_ip || vm.ip_address || null,
-      network: {
-        ...storedNetwork,
-        ...(vm.network || {}),
-      },
-      ports: vm.ports?.length ? vm.ports : (storedConfig.config?.ports || []),
-      configured: true,
-      storedConfigPath: storedConfig.configPath,
-      storedConfig: storedConfig.config,
-    };
-  } catch (error) {
-    return {
-      name: vmName,
-      exists: false,
-      status: 'unknown',
-        owner_user_id: storedVm.owner_user_id || null,
-        network_group_id: storedVm.network_group_id || null,
-        allow_same_group_traffic: storedVm.allow_same_group_traffic ?? true,
-        allow_host_access: storedVm.allow_host_access ?? true,
-        allow_private_lan_access: storedVm.allow_private_lan_access ?? false,
-        internet_access: storedVm.internet_access ?? true,
-      mac_address: storedVm.mac_address || storedNetwork.mac || null,
-      ip_address: storedVm.ip_address || storedNetwork.vm_ip || null,
-      network: Object.keys(storedNetwork).length > 0 ? storedNetwork : null,
-      ports: storedConfig.config?.ports || [],
-      configured: true,
-      storedConfigPath: storedConfig.configPath,
-      storedConfig: storedConfig.config,
-      provisionerError: error?.message || 'Unable to query provisioner state',
-    };
-  }
+  return {
+    name: vmName,
+    exists: false,
+    status: 'unknown',
+    owner_user_id: storedVm.owner_user_id || null,
+    network_group_id: storedVm.network_group_id || null,
+    allow_same_group_traffic: storedVm.allow_same_group_traffic ?? true,
+    allow_host_access: storedVm.allow_host_access ?? true,
+    allow_private_lan_access: storedVm.allow_private_lan_access ?? false,
+    internet_access: storedVm.internet_access ?? true,
+    mac_address: storedVm.mac_address || storedNetwork.mac || null,
+    ip_address: storedVm.ip_address || storedNetwork.vm_ip || null,
+    network: Object.keys(storedNetwork).length > 0 ? storedNetwork : null,
+    ports: storedConfig.config?.ports || [],
+    configured: true,
+    storedConfigPath: storedConfig.configPath,
+    storedConfig: storedConfig.config,
+  };
 }
 
 /**
@@ -381,7 +353,14 @@ export function createApp(deps = defaultDependencies) {
     '/api/vms',
     asyncRoute(async (_request, response) => {
       const storedConfigNames = await deps.listStoredConfigNames();
-      const vms = await Promise.all(storedConfigNames.map((name) => inspectConfiguredVm(deps, name)));
+      const vms = await Promise.all(
+        storedConfigNames.map(async (name) => {
+          const storedConfig = await deps.loadStoredConfig(name);
+          const runtimeStateRecord = await deps.loadStoredVmRuntimeState(name);
+          const runtimeState = runtimeStateRecord?.state || null;
+          return buildVmResponse(name, storedConfig, runtimeState);
+        }),
+      );
 
       response.json({
         vms: vms.sort((left, right) => left.name.localeCompare(right.name)),
@@ -392,7 +371,12 @@ export function createApp(deps = defaultDependencies) {
   app.get(
     '/api/vms/:name',
     asyncRoute(async (request, response) => {
-      const vm = await inspectConfiguredVm(deps, request.params.name);
+      const vmName = request.params.name;
+      const storedConfig = await deps.loadStoredConfig(vmName);
+      const runtimeStateRecord = await deps.loadStoredVmRuntimeState(vmName);
+      const runtimeState = runtimeStateRecord?.state || null;
+      const vm = buildVmResponse(vmName, storedConfig, runtimeState);
+
       response.json({ vm });
     }),
   );

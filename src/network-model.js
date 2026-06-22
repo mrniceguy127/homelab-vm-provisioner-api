@@ -6,6 +6,7 @@ import {
   listStoredVmDefinitions,
   upsertStoredNetworkGroup,
   upsertStoredUser,
+  upsertStoredVmDefinition,
 } from './db.js';
 
 export const NETWORK_PROFILES = ['private', 'nat', 'isolated_nat', 'bridged'];
@@ -569,7 +570,10 @@ export async function initializeNetworkModel() {
       nextConfig.ports = normalizePortForwards(nextConfig.ports, entry.vmName, ownerUserId, vmIpAddress);
     }
 
-    await writeStoredConfig(entry.configPath, nextConfig);
+    await upsertStoredVmDefinition({
+      vm_name: entry.vmName,
+      config: nextConfig,
+    });
   }
 
   if ((await listNetworkGroups()).length === 0) {
