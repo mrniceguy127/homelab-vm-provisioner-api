@@ -226,6 +226,16 @@ export function createApp(deps = defaultDependencies) {
     response.json({ ok: true });
   });
 
+  app.get('/api/config', (_request, response) => {
+    response.json({
+      limits: {
+        maxRamMb: Number.parseInt(process.env.HLVMP_VM_MAX_RAM_MB, 10) || 8192,
+        maxVcpus: Number.parseInt(process.env.HLVMP_VM_MAX_VCPUS, 10) || 4,
+        maxDiskGb: Number.parseInt(process.env.HLVMP_VM_MAX_DISK_GB, 10) || 20,
+      },
+    });
+  });
+
   app.get(
     '/api/users',
     asyncRoute(async (_request, response) => {
