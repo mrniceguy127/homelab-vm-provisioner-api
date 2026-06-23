@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import {
+  deleteStoredNetworkGroup,
   listStoredNetworkGroups,
   listStoredUsers,
   listStoredVmDefinitions,
@@ -281,7 +282,93 @@ export function buildBridgeName(networkGroupId) {
 }
 
 /**
- * Generate a libvirt network name from owner and group identifiers.
+ * Maximum length for libvirt network names. Libvirt supports up to 256 chars,
+ * but we use a conservative limit to ensure compatibility.
+ */
+export const MAX_LIBVIRT_NETWORK_NAME_LENGTH = 64;
+
+/**
+ * Maximum length for network group display names, accounting for the prefix
+ * overhead in the generated libvirt network name.
+ */
+export const MAX_NETWORK_GROUP_NAME_LENGTH = 40;
+
+/**
+ * Validate a network group name for use in virsh/libvirt network creation.
+ *
+ * Rules:
+ * - Required (non-empty after trim)
+ * - Only alphanumeric, hyphens, underscores, and spaces
+ * - Length after slugification must fit within limits
+ * - Must produce a valid libvirt network name when combined with prefix
+ *
+ * @param {string} name - Network group name to validate.
+ * @param {string} ownerUserId - Owner user ID for length calculation.
+ * @param {string} networkGroupId - Network group ID for length calculation.
+ * @returns {{valid:boolean,error?:string,normalizedName?:string,libvirtName?:string}} Validation result.
+ */
+export function validateNetworkGroupName(name, ownerUserId, networkGroupId) {
+  const trimmed = String(name || '').trim();
+  
+  if (!trimmed) {
+    return { valid: false, error: 'Network group name is required' };
+  }
+
+  if (trimmed.length > MAX_NETWORK_GROUP_NAME_LENGTH) {
+    return { 
+      valid: false, 
+      error: `Network group name is too long (max ${MAX_NETWORK_GROUP_NAME_LENGTH} characters)` 
+    };
+  }
+
+  // Check for allowed characters: alphanumeric, hyphens, underscores, spaces
+  if (!/^[a-zA-Z0-9_\- ]+$/.test(trimmed)) {
+    return { 
+      valid: false, 
+      error: 'Network group name can only contain letters, numbers, hyphens, underscores, and spaces' 
+    };
+  }
+
+  // Build the final libvirt network name to check length
+  const slug = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24) || 'group';
+  
+  const suffix = crypto.createHash('sha1')
+    .update(`${ownerUserId}:${networkGroupId}`)
+    .digest('hex')
+    .slice(0, 6);
+  
+  const libvirtName = `hvp-ng-${slug}-${suffix}`;
+
+  if (libvirtName.length > MAX_LIBVIRT_NETWORK_NAME_LENGTH) {
+    return { 
+      valid: false, 
+      error: `Generated virsh network name is too long (${libvirtName.length} > ${MAX_LIBVIRT_NETWORK_NAME_LENGTH})` 
+    };
+  }
+
+  return { 
+    valid: true, 
+    normalizedName: trimmed,
+    libvirtName 
+  };
+}
+
+/**
+ * Build a deterministic libvirt network name from a network-group's identity.
+ *
+ * Format: hvp-ng-{slug}-{suffix}
+ * - slug: sanitized group name (max 24 chars)
+ * - suffix: 6-char hash of ownerUserId:networkGroupId for uniqueness
+ *
+ * This ensures:
+ * - Network names are derived from network groups, not VMs
+ * - Multiple VMs in the same network group share the same virsh network
+ * - Network names are globally unique via the hash suffix
+ * - Names are stable and deterministic
  *
  * @param {string} ownerUserId - Owning user id.
  * @param {string} groupName - Human-readable group name.
@@ -408,6 +495,13 @@ export async function createNetworkGroup(input) {
     throw new Error('ownerUserId and name are required to create a network group.');
   }
 
+  // Generate a temporary ID for name validation (will be regenerated in buildNetworkGroupRecord)
+  const tempId = `ng-${crypto.randomBytes(4).toString('hex')}`;
+  const nameValidation = validateNetworkGroupName(name, ownerUserId, tempId);
+  if (!nameValidation.valid) {
+    throw new Error(nameValidation.error);
+  }
+
   const [users, networkGroups] = await Promise.all([listUsers(), listNetworkGroups()]);
   if (!users.some((user) => user.id === ownerUserId)) {
     throw new Error(`Unknown owner user: ${ownerUserId}`);
@@ -461,6 +555,22 @@ async function ensureDefaultNetworkGroup(ownerUserId) {
     name: 'default-admin',
     profile: 'isolated_nat',
   });
+}
+
+/**
+ * Delete a network group.
+ *
+ * @param {string} networkGroupId - Network group ID to delete.
+ * @returns {Promise<object>} Deleted network group.
+ * @throws {Error} If network group is in use by VMs or database error occurs.
+ */
+export async function deleteNetworkGroup(networkGroupId) {
+  if (!networkGroupId) {
+    throw new Error('networkGroupId is required to delete a network group.');
+  }
+
+  // This will check if the network group is in use and throw a 409 error if so
+  return await deleteStoredNetworkGroup(networkGroupId);
 }
 
 function normalizeLegacyProfile(network) {

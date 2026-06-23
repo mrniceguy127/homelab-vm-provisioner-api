@@ -18,6 +18,7 @@ import { createJobService } from './job-service.js';
 import {
   allocateSubnetFromPool,
   createNetworkGroup,
+  deleteNetworkGroup,
   listNetworkGroups,
   listUsers,
   validateNetworkGroupCidr,
@@ -35,6 +36,7 @@ const defaultDependencies = {
   deleteSavedConfigArtifacts,
   allocateSubnetFromPool,
   createNetworkGroup,
+  deleteNetworkGroup,
   listStoredConfigNames,
   listNetworkGroups,
   listUsers,
@@ -255,7 +257,63 @@ export function createApp(deps = defaultDependencies) {
     asyncRoute(async (request, response) => {
       const payload = deps.parseNetworkGroupRequest(request.body);
       const networkGroup = await deps.createNetworkGroup(payload);
+      
+      // Immediately reconcile networking to create virsh network
+      // This prevents CIDR staleness and validates network creation
+      if (jobService) {
+        try {
+          await jobService.enqueueVmReconcileJob({ policyOnly: false });
+          console.log(`Enqueued network reconcile job after creating network group: ${networkGroup.id}`);
+        } catch (error) {
+          console.warn(`Failed to enqueue reconcile job for network group ${networkGroup.id}: ${error.message}`);
+          // Don't fail the request - network group is created, reconcile will happen eventually
+        }
+      }
+      
       response.status(201).json({ networkGroup });
+    }),
+  );
+
+  app.delete(
+    '/api/network-groups/:id',
+    asyncRoute(async (request, response) => {
+      const networkGroupId = request.params.id;
+      
+      try {
+        const deletedGroup = await deps.deleteNetworkGroup(networkGroupId);
+        
+        // Immediately reconcile networking to remove virsh network
+        // This ensures the virsh network is cleaned up right away
+        if (jobService) {
+          try {
+            await jobService.enqueueVmReconcileJob({ policyOnly: false });
+            console.log(`Enqueued network reconcile job after deleting network group: ${networkGroupId}`);
+          } catch (error) {
+            console.warn(`Failed to enqueue reconcile job after deleting network group ${networkGroupId}: ${error.message}`);
+            // Don't fail the request - network group is deleted, reconcile will happen eventually
+          }
+        }
+        
+        response.json({ networkGroup: deletedGroup });
+      } catch (error) {
+        // Handle specific error cases
+        if (error.statusCode === 409) {
+          // Network group is in use
+          const conflictError = new Error(error.message);
+          conflictError.statusCode = 409;
+          if (error.vmCount !== undefined) {
+            conflictError.vmCount = error.vmCount;
+          }
+          throw conflictError;
+        }
+        if (error.statusCode === 404) {
+          // Network group not found
+          const notFoundError = new Error('Network group not found');
+          notFoundError.statusCode = 404;
+          throw notFoundError;
+        }
+        throw error;
+      }
     }),
   );
 

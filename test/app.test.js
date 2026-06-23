@@ -160,6 +160,43 @@ test('GET /api/network-groups lists persisted network groups', async () => {
   ]);
 });
 
+test('POST /api/network-groups enqueues reconcile job to create virsh network immediately', async () => {
+  const mockReconcile = { called: false, args: null };
+  const mockJobService = {
+    enqueueVmReconcileJob: async (args) => {
+      mockReconcile.called = true;
+      mockReconcile.args = args;
+      return { id: 1, status: 'queued' };
+    },
+  };
+  
+  const app = createApp(buildDeps({
+    createNetworkGroup: async ({ ownerUserId, name, profile = 'isolated_nat' }) => ({
+      id: 'ng-test',
+      owner_user_id: ownerUserId,
+      name,
+      profile,
+      libvirt_network_name: `hvp-ng-${name}-abc123`,
+      subnet_cidr: '10.80.1.0/29',
+    }),
+    parseNetworkGroupRequest: (body) => body,
+    isDatabaseAvailable: () => true,
+    getRepository: () => ({}),
+    createJobService: () => mockJobService,
+  }));
+
+  const response = await request(app).post('/api/network-groups').send({
+    ownerUserId: 'user-admin',
+    name: 'production',
+    profile: 'isolated_nat',
+  });
+
+  expect(response.status).toBe(201);
+  expect(response.body.networkGroup.id).toBe('ng-test');
+  expect(mockReconcile.called).toBe(true);
+  expect(mockReconcile.args).toEqual({ policyOnly: false });
+});
+
 test('PATCH /api/vms/:name/policy requires job service', async () => {
   const savedConfigs = [];
   const app = createApp(buildDeps({

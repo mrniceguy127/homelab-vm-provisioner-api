@@ -294,6 +294,92 @@ test('createNetworkGroup throws when network group already exists', async () => 
   ).rejects.toThrow(/Network group already exists/);
 });
 
+test('createNetworkGroup rejects invalid network group names', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  // Name too long
+  await expect(
+    networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name: 'a'.repeat(50),
+      profile: 'isolated_nat',
+    })
+  ).rejects.toThrow(/too long/);
+  
+  // Invalid characters
+  await expect(
+    networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name: 'test@group!',
+      profile: 'isolated_nat',
+    })
+  ).rejects.toThrow(/can only contain/);
+});
+
+test('createNetworkGroup accepts valid network group names', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  await networkModel.ensureDefaultUser();
+  
+  const validNames = [
+    'simple',
+    'with-hyphens',
+    'with_underscores',
+    'with spaces',
+    'MixedCase123',
+  ];
+  
+  for (const name of validNames) {
+    const group = await networkModel.createNetworkGroup({
+      ownerUserId: networkModel.DEFAULT_ADMIN_USER_ID,
+      name,
+      profile: 'isolated_nat',
+    });
+    expect(group.name).toBe(name);
+    expect(group.libvirt_network_name).toMatch(/^hvp-ng-.+-[0-9a-f]{6}$/);
+  }
+});
+
+test('validateNetworkGroupName validates name format', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  // Valid name
+  const valid = networkModel.validateNetworkGroupName('test-group', 'user-1', 'ng-123');
+  expect(valid.valid).toBe(true);
+  expect(valid.libvirtName).toMatch(/^hvp-ng-.+-[0-9a-f]{6}$/);
+  
+  // Empty name
+  const empty = networkModel.validateNetworkGroupName('', 'user-1', 'ng-123');
+  expect(empty.valid).toBe(false);
+  expect(empty.error).toMatch(/required/);
+  
+  // Invalid characters
+  const invalidChars = networkModel.validateNetworkGroupName('test@group!', 'user-1', 'ng-123');
+  expect(invalidChars.valid).toBe(false);
+  expect(invalidChars.error).toMatch(/can only contain/);
+  
+  // Too long
+  const tooLong = networkModel.validateNetworkGroupName('a'.repeat(50), 'user-1', 'ng-123');
+  expect(tooLong.valid).toBe(false);
+  expect(tooLong.error).toMatch(/too long/);
+});
+
+test('buildLibvirtNetworkName creates deterministic names', async () => {
+  const networkModel = await loadNetworkModel(tempRoot);
+  
+  const name1 = networkModel.buildLibvirtNetworkName('user-1', 'test-group', 'ng-123');
+  const name2 = networkModel.buildLibvirtNetworkName('user-1', 'test-group', 'ng-123');
+  expect(name1).toBe(name2);
+  
+  const name3 = networkModel.buildLibvirtNetworkName('user-2', 'test-group', 'ng-123');
+  expect(name3).not.toBe(name1);
+  
+  const name4 = networkModel.buildLibvirtNetworkName('user-1', 'test-group', 'ng-456');
+  expect(name4).not.toBe(name1);
+  
+  expect(name1).toMatch(/^hvp-ng-test-group-[0-9a-f]{6}$/);
+});
+
 // TDD: CIDR Validation Tests
 test('validateCidrFormat accepts valid CIDR notation', async () => {
   const networkModel = await loadNetworkModel(tempRoot);

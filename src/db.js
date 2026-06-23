@@ -260,6 +260,20 @@ export async function upsertStoredNetworkGroup(networkGroup) {
   return result.networkGroup;
 }
 
+/**
+ * Delete a network group from the database
+ *
+ * @param {string} networkGroupId - Network group ID
+ * @returns {Promise<object>} Deleted network group
+ * @throws {Error} If database is not available, network group not found, or is in use
+ */
+export async function deleteStoredNetworkGroup(networkGroupId) {
+  const result = await dbRequest(`/network-groups/${networkGroupId}`, {
+    method: 'DELETE',
+  });
+  return result.networkGroup;
+}
+
 export async function listStoredVmDefinitions() {
   const result = await dbRequest('/vm-definitions');
   return result.vmDefinitions;
