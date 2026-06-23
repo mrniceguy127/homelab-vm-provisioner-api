@@ -34,7 +34,7 @@ const vmSchema = z
     name: z.string().trim().min(1).max(63, 'VM names must be 63 characters or fewer'),
     user: z.string().trim().min(1),
     owner_user_id: z.string().trim().min(1).optional(),
-    network_group_id: z.string().trim().min(1).optional(),
+    network_group_id: z.string().trim().min(1, 'Network group is required'),
     ssh_key_file: z.string().trim().min(1).optional(),
     ram_mb: z.number().int().positive(),
     vcpus: z.number().int().positive(),

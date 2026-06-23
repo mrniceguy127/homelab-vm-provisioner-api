@@ -8,6 +8,8 @@ test('accepts a valid VM create request', () => {
       vm: {
         name: 'devbox',
         user: 'matt',
+        owner_user_id: 'user-admin',
+        network_group_id: 'ng-test',
         ram_mb: 4096,
         vcpus: 2,
         disk_gb: 40,

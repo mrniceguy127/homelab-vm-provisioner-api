@@ -145,13 +145,13 @@ function cloneDefinition(definition) {
 /**
  * Save a VM config using DB-backed VM definitions.
  *
- * @param {{config: object, sshPublicKey?: string, setupScript?: string}} payload - Save request payload.
+ * @param {{config: object, sshPublicKey?: string, setupScript?: string, displayName?: string}} payload - Save request payload.
  * @param {object} [options={}] - Save options.
  * @param {boolean} [options.overwrite=false] - Whether to allow overwriting an existing definition.
  * @param {boolean} [options.persist=true] - Whether to persist to the database.
  * @returns {Promise<object>} Saved definition metadata.
  */
-export async function saveVmConfig({ config, sshPublicKey, setupScript }, options = {}) {
+export async function saveVmConfig({ config, sshPublicKey, setupScript, displayName }, options = {}) {
   const { overwrite = false, persist = true } = options;
   const effectiveConfig = cloneDefinition(config);
   const vmName = effectiveConfig.vm.name;
@@ -190,6 +190,7 @@ export async function saveVmConfig({ config, sshPublicKey, setupScript }, option
   if (persist) {
     const vmDefinition = await upsertStoredVmDefinition({
       vm_name: vmName,
+      display_name: displayName || vmName,
       owner_user_id: effectiveConfig.vm.owner_user_id || null,
       network_group_id: effectiveConfig.vm.network_group_id || null,
       target_host_id: process.env.HOST_ID || 'local',

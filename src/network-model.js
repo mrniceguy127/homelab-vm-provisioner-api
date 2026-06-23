@@ -728,10 +728,10 @@ export async function prepareVmConfigForSave(payload, options = {}) {
   const nextConfig = nextPayload.config || {};
   const vm = nextConfig.vm || {};
   const ownerUserId = String(vm.owner_user_id || DEFAULT_ADMIN_USER_ID).trim() || DEFAULT_ADMIN_USER_ID;
-  let networkGroupId = String(vm.network_group_id || nextConfig.network?.network_group_id || '').trim();
+  const networkGroupId = String(vm.network_group_id || nextConfig.network?.network_group_id || '').trim();
+  
   if (!networkGroupId) {
-    networkGroupId = (await ensureDefaultNetworkGroup(ownerUserId)).id;
-    networkGroups = await listNetworkGroups();
+    throw new Error('Network group is required. Select a network group before creating a VM.');
   }
 
   const ownerUsers = await listUsers();

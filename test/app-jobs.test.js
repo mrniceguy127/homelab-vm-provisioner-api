@@ -192,6 +192,8 @@ function buildCreatePayload(vmName = 'devbox') {
       vm: {
         name: vmName,
         user: 'matt',
+        owner_user_id: 'user-admin',
+        network_group_id: 'ng-test',
         ram_mb: 4096,
         vcpus: 2,
         disk_gb: 40,
