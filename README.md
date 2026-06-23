@@ -781,3 +781,158 @@ Response `422`:
 - VM lifecycle behavior depends on the Python provisioner and the host tools it requires.
 - `GET /api/vms/:name/logs` and `GET /api/vms/:name/logs/stream` read host-side libvirt QEMU logs directly.
 - The bridge emits structured JSON on both success and failure so the Node layer can convert provisioner failures into HTTP responses.
+
+---
+
+# Async Job System
+
+The API integrates with a PostgreSQL-backed job queue for async VM provisioning workflows. Jobs are enqueued by the API and processed by the [worker daemon](../homelab-vm-provisioner-worker).
+
+## Architecture
+
+```
+API (enqueues jobs) → Database Service (job queue) → Worker Daemon (executes jobs)
+                                ↓
+                          PostgreSQL
+```
+
+## Job Types
+
+The API enqueues these job types:
+
+| Job Type | Description | Payload |
+|----------|-------------|---------|
+| `provision_vm` | Create a new VM from config | `{config, ssh_public_key?, setup_script?}` |
+| `destroy_vm` | Destroy an existing VM | `{vm_name}` |
+| `clone_vm` | Clone a VM from another | `{source_vm_name, config, ssh_public_key?, setup_script?}` |
+| `start_vm` | Start a stopped VM | `{vm_name}` |
+| `stop_vm` | Stop a running VM | `{vm_name}` |
+| `reconcile_vm_networking` | Reconcile network config and firewall rules | `{vm_records, network_groups}` |
+| `snapshot_create` | Create a VM snapshot | `{vm_name, payload}` |
+| `snapshot_restore` | Restore a VM from snapshot | `{vm_name, snapshot_id, metadata}` |
+| `snapshot_delete` | Delete a VM snapshot | `{vm_name, snapshot_id, metadata}` |
+
+## Job Lifecycle
+
+1. **Queued**: API creates job via database service
+2. **Claimed**: Worker claims job using row-level locking (safe for multiple workers)
+3. **Running**: Worker marks job as running
+4. **Succeeded/Failed**: Worker updates job with result or error
+5. **Events**: Worker appends event log entries throughout execution
+
+## Job Service
+
+Located in `src/job-service.js`, the job service provides a clean interface for creating jobs:
+
+```javascript
+import { createJobService } from './job-service.js';
+
+const jobService = createJobService({
+  repository: dbClient,
+  hostId: 'local',
+  workerSocket: '/run/hlvmp/worker.sock',  // Optional
+  logger: console
+});
+
+// Enqueue a provisioning job
+const job = await jobService.provision({
+  config: vmConfig,
+  sshPublicKey: 'ssh-ed25519 AAA...',
+  setupScript: '#!/bin/bash\necho ready'
+});
+
+// Get job status
+const status = await jobService.getJobStatus(job.id);
+
+// Cancel a queued job
+await jobService.cancelJob(job.id);
+```
+
+### Available Methods
+
+- `provision(payload)`: Enqueue provision_vm job
+- `destroy(vmName)`: Enqueue destroy_vm job
+- `clone(sourceVmName, payload)`: Enqueue clone_vm job
+- `start(vmName)`: Enqueue start_vm job
+- `stop(vmName)`: Enqueue stop_vm job
+- `reconcileNetworking(payload)`: Enqueue reconcile_vm_networking job
+- `snapshotCreate(vmName, payload)`: Enqueue snapshot_create job
+- `snapshotRestore(vmName, snapshotId, metadata)`: Enqueue snapshot_restore job
+- `snapshotDelete(vmName, snapshotId, metadata)`: Enqueue snapshot_delete job
+- `getJobStatus(jobId)`: Get job details and events
+- `cancelJob(jobId)`: Cancel a queued job
+
+## Worker Wakeup
+
+When a worker socket path is configured, the job service sends a wake message after enqueueing jobs:
+
+```bash
+# Configure worker socket in .env
+WORKER_SOCKET=/run/hlvmp/worker.sock
+```
+
+This enables immediate job processing instead of waiting for the next poll interval.
+
+## Environment Variables for Jobs
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST_ID` | (required) | Host identifier for job targeting |
+| `DB_SERVICE_URL` | `http://localhost:3002` | Database microservice URL |
+| `DB_SERVICE_PASSWORD` | (required) | Database microservice password |
+| `WORKER_SOCKET` | (none) | Worker socket path for wake notifications |
+
+## Database Service Integration
+
+The API communicates with the database microservice for all job operations:
+
+```javascript
+import { createDbClient } from './db.js';
+
+const dbClient = createDbClient({
+  baseUrl: process.env.DB_SERVICE_URL,
+  password: process.env.DB_SERVICE_PASSWORD
+});
+
+// Enqueue job
+const job = await dbClient.enqueueJob('provision_vm', hostId, payload);
+
+// Get job with events
+const job = await dbClient.getJob(jobId);
+const events = await dbClient.listJobEvents(jobId);
+```
+
+See [Database Service README](../homelab-vm-provisioner-db/README.md) for full API documentation.
+
+## Error Handling
+
+Jobs can fail at various stages:
+
+- **Validation**: API rejects invalid requests before enqueueing
+- **Claiming**: Worker fails to acquire resource locks → job retries
+- **Execution**: Provisioner CLI fails → job marked as failed with error message
+- **Max Attempts**: After 3 failed attempts, job stops retrying
+
+Failed jobs include:
+- Error message in `error` field
+- Detailed event log for debugging
+- Retriable flag (if temporary failure)
+
+## Monitoring Jobs
+
+The API exposes job status endpoints:
+
+```bash
+# Get all jobs
+GET /api/jobs
+
+# Get specific job
+GET /api/jobs/:id
+
+# Get job events
+GET /api/jobs/:id/events
+```
+
+See [Worker Daemon README](../homelab-vm-provisioner-worker/README.md) for worker-side documentation.
+
+---
