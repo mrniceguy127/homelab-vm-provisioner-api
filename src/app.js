@@ -15,6 +15,7 @@ import {
   upsertStoredVmDefinitionAndEnqueueJob,
 } from './db.js';
 import { createJobService } from './job-service.js';
+import { createInternalWorkerRouter } from './internal-worker-routes.js';
 import {
   allocateSubnetFromPool,
   createNetworkGroup,
@@ -203,9 +204,11 @@ export function parseLines(rawValue, fallback) {
  * Create the Express application with injectable dependencies.
  *
  * @param {object} [deps=defaultDependencies] - Overridable implementation dependencies.
+ * @param {object} [options] - Additional options
+ * @param {object} [options.rabbitMqPublisher] - Pre-initialized RabbitMQ publisher
  * @returns {import('express').Express} Configured Express application.
  */
-export function createApp(deps = defaultDependencies) {
+export function createApp(deps = defaultDependencies, options = {}) {
   const app = express();
 
   app.use(express.json({ limit: '1mb' }));
@@ -213,14 +216,26 @@ export function createApp(deps = defaultDependencies) {
   // Initialize job service if database is available
   const hostId = process.env.HOST_ID || null;
   const workerSocket = process.env.WORKER_SOCKET || null;
+  const rabbitMqPublisher = options.rabbitMqPublisher || null;
   let jobService = null;
   
   if (deps.isDatabaseAvailable()) {
     try {
       const repository = deps.getRepository();
-      jobService = deps.createJobService({ repository, hostId, workerSocket });
+      jobService = deps.createJobService({ repository, hostId, workerSocket, rabbitMqPublisher });
     } catch (error) {
       console.warn('Failed to initialize job service:', error.message);
+    }
+  }
+  
+  // Add internal worker routes
+  if (deps.isDatabaseAvailable()) {
+    try {
+      const repository = deps.getRepository();
+      const internalWorkerRouter = createInternalWorkerRouter({ repository, hostId });
+      app.use('/internal/worker', internalWorkerRouter);
+    } catch (error) {
+      console.warn('Failed to register internal worker routes:', error.message);
     }
   }
 

@@ -27,10 +27,11 @@ function createJobServiceError(message, statusCode = 500) {
  * @param {object} options.repository - Job repository client
  * @param {string|null} options.hostId - API host ID (null if not configured)
  * @param {string|null} options.workerSocket - Worker socket path (null if not configured)
+ * @param {object|null} options.rabbitMqPublisher - RabbitMQ publisher (null if not configured)
  * @param {object} options.logger - Logger instance (default: console)
  * @returns {object} Job service
  */
-export function createJobService({ repository, hostId, workerSocket = null, logger = console }) {
+export function createJobService({ repository, hostId, workerSocket = null, rabbitMqPublisher = null, logger = console }) {
   /**
    * Ensure host ID is configured
    * 
@@ -56,6 +57,49 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
     }
   }
   
+  /**
+   * Publish job to RabbitMQ queue
+   * 
+   * @param {object} job - Job to publish
+   * @returns {Promise<void>}
+   * @throws {Error} If RabbitMQ publish fails
+   */
+  async function publishJobToQueue(job) {
+    if (!rabbitMqPublisher) {
+      // RabbitMQ not configured - fall back to socket notification
+      logger.warn('RabbitMQ not configured, using socket notification only');
+      await notifyWorker();
+      return;
+    }
+    
+    try {
+      await rabbitMqPublisher.publishJob({
+        job_id: job.id,
+        job_type: job.type,
+        target_host_id: job.target_host_id
+      });
+      
+      // Update job status to 'published' after successful RabbitMQ publish
+      await repository.updateJobStatus(job.id, 'published', {
+        queue_message_id: String(job.id) // Use job ID as message correlation ID
+      });
+      
+      logger.info(`Job ${job.id} published to RabbitMQ successfully`);
+    } catch (error) {
+      logger.error(`Failed to publish job ${job.id} to RabbitMQ:`, error);
+      
+      // Update job status to 'publish_failed'
+      await repository.updateJobStatus(job.id, 'publish_failed', {
+        error: `RabbitMQ publish failed: ${error.message}`
+      });
+      
+      throw createJobServiceError(
+        `Failed to publish job to queue: ${error.message}`,
+        500
+      );
+    }
+  }
+  
   return {
     /**
      * Enqueue a VM provision job
@@ -74,7 +118,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 3 }
       );
       
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
     
@@ -94,7 +138,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
       
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
     
@@ -116,7 +160,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: targetVmName, maxAttempts: 3 }
       );
       
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
     
@@ -137,7 +181,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: null, maxAttempts: 1 }
       );
       
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
 
@@ -151,7 +195,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
 
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
 
@@ -165,7 +209,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
 
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
 
@@ -179,7 +223,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
 
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
 
@@ -193,7 +237,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
 
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
 
@@ -207,7 +251,7 @@ export function createJobService({ repository, hostId, workerSocket = null, logg
         { targetVmId: vmName, maxAttempts: 1 }
       );
 
-      await notifyWorker();
+      await publishJobToQueue(job);
       return job;
     },
     

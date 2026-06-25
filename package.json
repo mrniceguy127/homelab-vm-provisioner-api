@@ -16,6 +16,7 @@
     "build": "npm run docs:build"
   },
   "dependencies": {
+    "amqplib": "^0.10.3",
     "express": "^4.21.2",
     "js-yaml": "^4.1.0",
     "zod": "^3.24.1"
