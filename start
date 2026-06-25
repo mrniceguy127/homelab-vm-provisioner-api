@@ -104,6 +104,13 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
         -e DB_SERVICE_URL="$API_DB_SERVICE_URL"
         -e DB_SERVICE_PASSWORD="${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         -e HOST_ID="${HOST_ID:-local}"
+        -e QUEUE_HOST="${QUEUE_HOST:-}"
+        -e QUEUE_PORT="${QUEUE_PORT:-}"
+        -e QUEUE_VHOST="${QUEUE_VHOST:-}"
+        -e QUEUE_EXCHANGE="${QUEUE_EXCHANGE:-}"
+        -e QUEUE_ROUTING_KEY_PREFIX="${QUEUE_ROUTING_KEY_PREFIX:-}"
+        -e QUEUE_API_USER="${QUEUE_API_USER:-}"
+        -e QUEUE_API_PASSWORD="${QUEUE_API_PASSWORD:-}"
     )
 
     DESIRED_IMAGE_ID="$(docker_image_id homelab-vm-provisioner-api:latest)"
@@ -112,6 +119,13 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
         printf 'DB_SERVICE_URL=%s\n' "$API_DB_SERVICE_URL"
         printf 'DB_SERVICE_PASSWORD=%s\n' "${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         printf 'HOST_ID=%s\n' "${HOST_ID:-local}"
+        printf 'QUEUE_HOST=%s\n' "${QUEUE_HOST:-}"
+        printf 'QUEUE_PORT=%s\n' "${QUEUE_PORT:-}"
+        printf 'QUEUE_VHOST=%s\n' "${QUEUE_VHOST:-}"
+        printf 'QUEUE_EXCHANGE=%s\n' "${QUEUE_EXCHANGE:-}"
+        printf 'QUEUE_ROUTING_KEY_PREFIX=%s\n' "${QUEUE_ROUTING_KEY_PREFIX:-}"
+        printf 'QUEUE_API_USER=%s\n' "${QUEUE_API_USER:-}"
+        printf 'QUEUE_API_PASSWORD=%s\n' "${QUEUE_API_PASSWORD:-}"
     } | hash_string)"
 
     if docker_container_exists hlvmp-api; then
@@ -136,6 +150,11 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
     log "Starting API container"
     log "  Port: $API_PORT"
     log "  DB Service URL: $API_DB_SERVICE_URL"
+    if [[ -n "${QUEUE_HOST:-}" && -n "${QUEUE_API_USER:-}" ]]; then
+        log "  RabbitMQ: ${QUEUE_HOST}:${QUEUE_PORT} (vhost: ${QUEUE_VHOST})"
+    else
+        log "  RabbitMQ: not configured"
+    fi
 
     docker run -d \
         --name hlvmp-api \
