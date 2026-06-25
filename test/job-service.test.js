@@ -1,7 +1,6 @@
 import { expect, test, vi } from 'vitest';
 
 import { createJobService } from '../src/job-service.js';
-import * as socketClient from '../src/socket-client.js';
 
 function buildMockRepository() {
   return {
@@ -10,11 +9,20 @@ function buildMockRepository() {
     listJobs: vi.fn(),
     appendJobEvent: vi.fn(),
     listJobEvents: vi.fn(),
+    updateJobStatus: vi.fn(),
+  };
+}
+
+function buildMockRabbitMqPublisher() {
+  return {
+    publishJob: vi.fn().mockResolvedValue(true),
+    close: vi.fn(),
   };
 }
 
 test('enqueueVmProvisionJob enqueues a provision job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 123,
     type: 'provision_vm',
@@ -30,6 +38,7 @@ test('enqueueVmProvisionJob enqueues a provision job with correct parameters', a
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmProvisionJob('test-vm');
@@ -41,11 +50,19 @@ test('enqueueVmProvisionJob enqueues a provision job with correct parameters', a
     { targetVmId: 'test-vm', maxAttempts: 3 }
   );
   
+  expect(mockRabbitMq.publishJob).toHaveBeenCalledWith({
+    job_id: 123,
+    job_type: 'provision_vm',
+    target_host_id: 'host-1',
+  });
+  
+  expect(mockRepo.updateJobStatus).toHaveBeenCalledWith(123, 'published', expect.any(Object));
   expect(result).toEqual(mockJob);
 });
 
 test('enqueueVmDestroyJob enqueues a destroy job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 124,
     type: 'destroy_vm',
@@ -61,6 +78,7 @@ test('enqueueVmDestroyJob enqueues a destroy job with correct parameters', async
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmDestroyJob('test-vm');
@@ -77,6 +95,7 @@ test('enqueueVmDestroyJob enqueues a destroy job with correct parameters', async
 
 test('enqueueVmCloneJob enqueues a clone job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 125,
     type: 'clone_vm',
@@ -92,6 +111,7 @@ test('enqueueVmCloneJob enqueues a clone job with correct parameters', async () 
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmCloneJob('source-vm', 'new-vm');
@@ -108,6 +128,7 @@ test('enqueueVmCloneJob enqueues a clone job with correct parameters', async () 
 
 test('enqueueVmReconcileJob enqueues a reconcile job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 126,
     type: 'reconcile_vm_networking',
@@ -123,6 +144,7 @@ test('enqueueVmReconcileJob enqueues a reconcile job with correct parameters', a
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmReconcileJob({ policyOnly: true });
@@ -221,7 +243,7 @@ test('getJobEvents accepts custom limit', async () => {
   expect(mockRepo.listJobEvents).toHaveBeenCalledWith(123, 50);
 });
 
-test('enqueueVmProvisionJob attempts worker wakeup when socket configured', async () => {
+test('enqueueVmProvisionJob throws error when RabbitMQ is not configured', async () => {
   const mockRepo = buildMockRepository();
   const mockJob = {
     id: 123,
@@ -235,24 +257,20 @@ test('enqueueVmProvisionJob attempts worker wakeup when socket configured', asyn
   
   mockRepo.enqueueJob.mockResolvedValue(mockJob);
   
-  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(true);
-  
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
-    workerSocket: '/run/hlvmp/worker.sock',
+    rabbitMqPublisher: null,
   });
   
-  const result = await service.enqueueVmProvisionJob('test-vm');
-  
-  expect(result).toEqual(mockJob);
-  expect(wakeWorkerSpy).toHaveBeenCalledWith('/run/hlvmp/worker.sock', expect.any(Object));
-  
-  wakeWorkerSpy.mockRestore();
+  await expect(
+    service.enqueueVmProvisionJob('test-vm')
+  ).rejects.toThrow('RabbitMQ is not configured');
 });
 
-test('enqueueVmProvisionJob succeeds even if worker wakeup fails', async () => {
+test('enqueueVmProvisionJob marks job as publish_failed when RabbitMQ publish fails', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 123,
     type: 'provision_vm',
@@ -264,79 +282,26 @@ test('enqueueVmProvisionJob succeeds even if worker wakeup fails', async () => {
   };
   
   mockRepo.enqueueJob.mockResolvedValue(mockJob);
-  
-  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(false);
-  
-  const service = createJobService({
-    repository: mockRepo,
-    hostId: 'host-1',
-    workerSocket: '/run/hlvmp/worker.sock',
-  });
-  
-  // Should still succeed even if wake fails
-  const result = await service.enqueueVmProvisionJob('test-vm');
-  
-  expect(result).toEqual(mockJob);
-  expect(wakeWorkerSpy).toHaveBeenCalled();
-  
-  wakeWorkerSpy.mockRestore();
-});
-
-test('enqueueVmProvisionJob does not attempt wakeup when socket not configured', async () => {
-  const mockRepo = buildMockRepository();
-  const mockJob = {
-    id: 123,
-    type: 'provision_vm',
-    status: 'queued',
-    target_host_id: 'host-1',
-    target_vm_id: 'test-vm',
-    payload: { vmName: 'test-vm' },
-    created_at: new Date(),
-  };
-  
-  mockRepo.enqueueJob.mockResolvedValue(mockJob);
-  
-  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker');
+  mockRabbitMq.publishJob.mockRejectedValue(new Error('Connection failed'));
   
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
-    workerSocket: null,
+    rabbitMqPublisher: mockRabbitMq,
   });
   
-  const result = await service.enqueueVmProvisionJob('test-vm');
+  await expect(
+    service.enqueueVmProvisionJob('test-vm')
+  ).rejects.toThrow('Failed to publish job to queue');
   
-  expect(result).toEqual(mockJob);
-  // wakeWorker should not be called when socket is null
-  expect(wakeWorkerSpy).not.toHaveBeenCalled();
-  
-  wakeWorkerSpy.mockRestore();
-});
-
-test('all enqueue methods attempt worker wakeup', async () => {
-  const mockRepo = buildMockRepository();
-  mockRepo.enqueueJob.mockResolvedValue({ id: 123 });
-  
-  const wakeWorkerSpy = vi.spyOn(socketClient, 'wakeWorker').mockResolvedValue(true);
-  
-  const service = createJobService({
-    repository: mockRepo,
-    hostId: 'host-1',
-    workerSocket: '/run/hlvmp/worker.sock',
+  expect(mockRepo.updateJobStatus).toHaveBeenCalledWith(123, 'publish_failed', {
+    error: 'RabbitMQ publish failed: Connection failed',
   });
-  
-  await service.enqueueVmProvisionJob('test-vm');
-  await service.enqueueVmDestroyJob('test-vm');
-  await service.enqueueVmCloneJob('source-vm', 'new-vm');
-  await service.enqueueVmReconcileJob({ policyOnly: true });
-  
-  expect(wakeWorkerSpy).toHaveBeenCalledTimes(4);
-  
-  wakeWorkerSpy.mockRestore();
 });
 
 test('enqueueVmStartJob enqueues a start job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 126,
     type: 'start_vm',
@@ -351,6 +316,7 @@ test('enqueueVmStartJob enqueues a start job with correct parameters', async () 
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmStartJob('test-vm');
@@ -367,6 +333,7 @@ test('enqueueVmStartJob enqueues a start job with correct parameters', async () 
 
 test('enqueueVmStopJob enqueues a stop job with correct parameters', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 127,
     type: 'stop_vm',
@@ -381,6 +348,7 @@ test('enqueueVmStopJob enqueues a stop job with correct parameters', async () =>
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmStopJob('test-vm');
@@ -397,6 +365,7 @@ test('enqueueVmStopJob enqueues a stop job with correct parameters', async () =>
 
 test('enqueueVmSnapshotCreateJob enqueues a snapshot create job', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 128,
     type: 'snapshot_create',
@@ -411,6 +380,7 @@ test('enqueueVmSnapshotCreateJob enqueues a snapshot create job', async () => {
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmSnapshotCreateJob('test-vm');
@@ -427,6 +397,7 @@ test('enqueueVmSnapshotCreateJob enqueues a snapshot create job', async () => {
 
 test('enqueueVmSnapshotRestoreJob enqueues a snapshot restore job', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 129,
     type: 'snapshot_restore',
@@ -441,6 +412,7 @@ test('enqueueVmSnapshotRestoreJob enqueues a snapshot restore job', async () => 
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmSnapshotRestoreJob('test-vm', 'snap-123');
@@ -457,6 +429,7 @@ test('enqueueVmSnapshotRestoreJob enqueues a snapshot restore job', async () => 
 
 test('enqueueVmSnapshotDeleteJob enqueues a snapshot delete job', async () => {
   const mockRepo = buildMockRepository();
+  const mockRabbitMq = buildMockRabbitMqPublisher();
   const mockJob = {
     id: 130,
     type: 'snapshot_delete',
@@ -471,6 +444,7 @@ test('enqueueVmSnapshotDeleteJob enqueues a snapshot delete job', async () => {
   const service = createJobService({
     repository: mockRepo,
     hostId: 'host-1',
+    rabbitMqPublisher: mockRabbitMq,
   });
   
   const result = await service.enqueueVmSnapshotDeleteJob('test-vm', 'snap-123');

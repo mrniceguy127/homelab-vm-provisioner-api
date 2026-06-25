@@ -215,14 +215,13 @@ export function createApp(deps = defaultDependencies, options = {}) {
 
   // Initialize job service if database is available
   const hostId = process.env.HOST_ID || null;
-  const workerSocket = process.env.WORKER_SOCKET || null;
   const rabbitMqPublisher = options.rabbitMqPublisher || null;
   let jobService = null;
   
   if (deps.isDatabaseAvailable()) {
     try {
       const repository = deps.getRepository();
-      jobService = deps.createJobService({ repository, hostId, workerSocket, rabbitMqPublisher });
+      jobService = deps.createJobService({ repository, hostId, rabbitMqPublisher });
     } catch (error) {
       console.warn('Failed to initialize job service:', error.message);
     }

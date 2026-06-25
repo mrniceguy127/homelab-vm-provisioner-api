@@ -2,10 +2,8 @@
  * Job service for enqueueing and managing VM operation jobs
  * 
  * Provides a clean interface for creating jobs that will be processed
- * by the worker daemon.
+ * by the worker daemon via RabbitMQ.
  */
-
-import { wakeWorker } from './socket-client.js';
 
 /**
  * Create an error with a specific HTTP status code
@@ -26,12 +24,11 @@ function createJobServiceError(message, statusCode = 500) {
  * @param {object} options - Service options
  * @param {object} options.repository - Job repository client
  * @param {string|null} options.hostId - API host ID (null if not configured)
- * @param {string|null} options.workerSocket - Worker socket path (null if not configured)
- * @param {object|null} options.rabbitMqPublisher - RabbitMQ publisher (null if not configured)
+ * @param {object|null} options.rabbitMqPublisher - RabbitMQ publisher (required)
  * @param {object} options.logger - Logger instance (default: console)
  * @returns {object} Job service
  */
-export function createJobService({ repository, hostId, workerSocket = null, rabbitMqPublisher = null, logger = console }) {
+export function createJobService({ repository, hostId, rabbitMqPublisher = null, logger = console }) {
   /**
    * Ensure host ID is configured
    * 
@@ -47,13 +44,16 @@ export function createJobService({ repository, hostId, workerSocket = null, rabb
   }
 
   /**
-   * Wake the colocated worker after enqueueing a job
+   * Ensure RabbitMQ is configured
    * 
-   * This is a best-effort operation that does not affect the job enqueue result.
+   * @throws {Error} If RabbitMQ publisher is not configured
    */
-  async function notifyWorker() {
-    if (workerSocket) {
-      await wakeWorker(workerSocket, { logger });
+  function requireRabbitMq() {
+    if (!rabbitMqPublisher) {
+      throw createJobServiceError(
+        'RabbitMQ is not configured. Job queue requires RabbitMQ to dispatch jobs to workers.',
+        500
+      );
     }
   }
   
@@ -65,12 +65,7 @@ export function createJobService({ repository, hostId, workerSocket = null, rabb
    * @throws {Error} If RabbitMQ publish fails
    */
   async function publishJobToQueue(job) {
-    if (!rabbitMqPublisher) {
-      // RabbitMQ not configured - fall back to socket notification
-      logger.warn('RabbitMQ not configured, using socket notification only');
-      await notifyWorker();
-      return;
-    }
+    requireRabbitMq();
     
     try {
       await rabbitMqPublisher.publishJob({

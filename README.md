@@ -830,7 +830,7 @@ import { createJobService } from './job-service.js';
 const jobService = createJobService({
   repository: dbClient,
   hostId: 'local',
-  workerSocket: '/run/hlvmp/worker.sock',  // Optional
+  rabbitMqPublisher: rabbitMqPublisher,  // Required
   logger: console
 });
 
@@ -862,16 +862,30 @@ await jobService.cancelJob(job.id);
 - `getJobStatus(jobId)`: Get job details and events
 - `cancelJob(jobId)`: Cancel a queued job
 
-## Worker Wakeup
+## Job Dispatch via RabbitMQ
 
-When a worker socket path is configured, the job service sends a wake message after enqueueing jobs:
+The API dispatches jobs to workers via RabbitMQ. When a job is enqueued, it is:
+
+1. Created in the database with status `'queued'`
+2. Published to RabbitMQ exchange with routing key `host.<HOST_ID>`
+3. Updated to status `'published'` after successful publish
+
+Workers consume from queues bound to their target host ID and process jobs immediately.
+
+**RabbitMQ Configuration:**
 
 ```bash
-# Configure worker socket in .env
-WORKER_SOCKET=/run/hlvmp/worker.sock
+# Required environment variables in .env
+QUEUE_HOST=localhost
+QUEUE_PORT=3334
+QUEUE_VHOST=provisioner
+QUEUE_EXCHANGE=provisioner.jobs
+QUEUE_ROUTING_KEY_PREFIX=host
+QUEUE_API_USER=provisioner_api
+QUEUE_API_PASSWORD=change-me
 ```
 
-This enables immediate job processing instead of waiting for the next poll interval.
+If RabbitMQ is not configured, job enqueue operations will fail with an error.
 
 ## Environment Variables for Jobs
 
@@ -880,7 +894,13 @@ This enables immediate job processing instead of waiting for the next poll inter
 | `HOST_ID` | (required) | Host identifier for job targeting |
 | `DB_SERVICE_URL` | `http://localhost:3002` | Database microservice URL |
 | `DB_SERVICE_PASSWORD` | (required) | Database microservice password |
-| `WORKER_SOCKET` | (none) | Worker socket path for wake notifications |
+| `QUEUE_HOST` | (required) | RabbitMQ host |
+| `QUEUE_PORT` | `3334` | RabbitMQ port |
+| `QUEUE_VHOST` | `provisioner` | RabbitMQ vhost |
+| `QUEUE_EXCHANGE` | `provisioner.jobs` | RabbitMQ exchange name |
+| `QUEUE_ROUTING_KEY_PREFIX` | `host` | Routing key prefix |
+| `QUEUE_API_USER` | (required) | RabbitMQ API publisher username |
+| `QUEUE_API_PASSWORD` | (required) | RabbitMQ API publisher password |
 
 ## Database Service Integration
 

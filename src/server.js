@@ -27,7 +27,7 @@ async function main() {
     console.warn('Error:', error.message);
   }
 
-  // Initialize RabbitMQ publisher (optional)
+  // Initialize RabbitMQ publisher (required for job queue)
   let rabbitMqPublisher = null;
   if (process.env.QUEUE_HOST && process.env.QUEUE_API_USER) {
     try {
@@ -35,10 +35,11 @@ async function main() {
       console.log('RabbitMQ publisher initialized successfully');
     } catch (error) {
       console.warn('Failed to initialize RabbitMQ publisher:', error.message);
-      console.warn('Job queue will fall back to socket notification');
+      console.warn('Job queue will be unavailable - jobs cannot be dispatched without RabbitMQ');
     }
   } else {
     console.log('RabbitMQ not configured (QUEUE_HOST or QUEUE_API_USER missing)');
+    console.log('Job queue will be unavailable - configure RabbitMQ to enable VM provisioning');
   }
 
   // Create app AFTER database initialization so job service can be properly initialized
