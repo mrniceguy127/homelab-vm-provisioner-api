@@ -2,14 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Load workspace .env first, then allow component .env to override it
-if [[ -f "$WORKSPACE_ROOT/.env" ]]; then
-    set -a
-    source "$WORKSPACE_ROOT/.env"
-    set +a
-fi
 
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set -a
