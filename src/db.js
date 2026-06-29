@@ -136,6 +136,15 @@ class JobRepositoryClient {
     return result.job;
   }
   
+  async updateJobStatus(jobId, status, updates = {}) {
+    const result = await dbRequest(`/jobs/${jobId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, ...updates }),
+    });
+    
+    return result.job;
+  }
+  
   async cancelQueuedJob(jobId) {
     const result = await dbRequest(`/jobs/${jobId}/cancel`, {
       method: 'POST',

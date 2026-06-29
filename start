@@ -54,11 +54,15 @@ docker_image_id() {
 }
 
 DOCKER_MODE=false
+FOLLOW_LOGS=true
 
 for arg in "$@"; do
     case "$arg" in
         --docker)
             DOCKER_MODE=true
+            ;;
+        --no-follow)
+            FOLLOW_LOGS=false
             ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
@@ -66,8 +70,9 @@ for arg in "$@"; do
             echo "Start the API service."
             echo ""
             echo "Options:"
-            echo "  --docker    Start API in Docker container"
-            echo "  --help      Show this help message"
+            echo "  --docker      Start API in Docker container"
+            echo "  --no-follow   Don't follow logs (for orchestrated startup)"
+            echo "  --help        Show this help message"
             echo ""
             echo "Default: Start API locally with npm start"
             exit 0
@@ -158,6 +163,27 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
 
     log "API container ready"
     log "  Port: $API_PORT"
+    log ""
+    
+    if [[ "$FOLLOW_LOGS" == "true" ]]; then
+        log "Following container logs (Ctrl+C to exit)..."
+        log ""
+        
+        # Cleanup handler
+        cleanup() {
+            log ""
+            log "Container still running in background"
+            log "  View logs: docker logs -f hlvmp-api"
+            log "  Stop: docker stop hlvmp-api"
+        }
+        trap cleanup EXIT INT TERM
+        
+        docker logs -f --tail 50 hlvmp-api
+    else
+        log "Container started successfully"
+        log "  View logs: docker logs -f hlvmp-api"
+        log "  Stop: docker stop hlvmp-api"
+    fi
     exit 0
 fi
 
