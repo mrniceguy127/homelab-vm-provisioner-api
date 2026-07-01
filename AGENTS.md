@@ -18,33 +18,38 @@ Copy `.env.example` to `.env` and customize:
 ```bash
 cp .env.example .env
 # Edit .env to set API_PORT, PROVISIONER_VENV_DIR, HLVMP_* variables
-# Set DATABASE_URL to enable job queue features
+# Set DB_SERVICE_HOST + DB_SERVICE_PASSWORD and QUEUE_* to enable async jobs
 ```
 
-**Database Setup** (optional, for async job queue):
+**Async Jobs Setup** (optional): the API records job metadata in the db-interface microservice
+and publishes jobs to RabbitMQ. Configure both to enable async provisioning:
+
 ```bash
-# Native PostgreSQL (recommended)
+# 1a. PostgreSQL engine + migrations
 cd ../homelab-vm-provisioner-db
-./setup
-./start
-npm run migrate
+./setup && ./start && ./build   # install, start, run migrations
 
-# Create database and user
-sudo -u postgres psql -c "CREATE DATABASE hlvmp;"
-sudo -u postgres psql -c "CREATE USER hlvmp WITH PASSWORD 'hlvmppass';"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE hlvmp TO hlvmp;"
+# 1b. db-interface microservice (job metadata, events, resource locks)
+cd ../homelab-vm-provisioner-db-interface
+./setup && ./start   # port 3002
 
-# Set DATABASE_URL in API .env
-DATABASE_URL=postgresql://hlvmp:hlvmppass@localhost:5432/hlvmp
+# Set in API .env
+DB_SERVICE_HOST=localhost
+DB_SERVICE_PORT=3002
+DB_SERVICE_PASSWORD=changeme_db_secret
 
-# Docker mode (development)
-cd ../homelab-vm-provisioner-db
-./setup --docker
-./start --docker
-npm run migrate
+# 2. RabbitMQ broker (job delivery)
+cd ../homelab-vm-provisioner-job-queue
+./setup && ./start && ./build   # provisions topology
 
-# Set DATABASE_URL in API .env
-DATABASE_URL=postgresql://hlvmp:hlvmppass@localhost:5432/hlvmp
+# Set in API .env
+QUEUE_HOST=localhost
+QUEUE_PORT=3334
+QUEUE_VHOST=provisioner
+QUEUE_EXCHANGE=provisioner.jobs
+QUEUE_API_USER=provisioner_api
+QUEUE_API_PASSWORD=change-me
+HOST_ID=local
 ```
 
 **Note**: When called from parent scripts, this component inherits workspace `.env` variables. This component's `.env` overrides those inherited values. Variables not set here remain inherited from parent.
@@ -56,13 +61,13 @@ Main endpoint areas:
 - Network management (users, network groups)
 - Snapshots and logs
 - Firewall policy updates
-- Job queue (internal - uses database microservice for async operations)
+- Job dispatch (internal - records metadata in DB microservice, publishes to RabbitMQ)
 
-**Database Microservice Integration:**
-- The API uses a database microservice (port 3002) internally for async job operations
-- Job queue endpoints are **not exposed** to external API users
-- The API uses the job repository internally (e.g., for VM provisioning)
-- Requires `DB_SERVICE_URL` and `DB_SERVICE_PASSWORD` configuration
+**Async Job Integration:**
+- The API records job metadata via the DB microservice (port 3002) and publishes jobs to RabbitMQ (port 3334)
+- Job endpoints are **not exposed** to external API users
+- The API uses the job service internally (e.g., for VM provisioning)
+- Requires `DB_SERVICE_HOST`, `DB_SERVICE_PORT`, `DB_SERVICE_PASSWORD`, and `QUEUE_*` configuration
 
 Generated API docs and source route/schema comments are the source of truth for exact routes, request/response bodies, validation rules, status codes, and examples.
 
@@ -81,6 +86,8 @@ src/
 ├── app.js              # Express routes & middleware
 ├── server.js           # HTTP server
 ├── db.js               # Database microservice client
+├── job-service.js      # Enqueue jobs (metadata + RabbitMQ publish)
+├── rabbitmq-publisher.js # Publish job messages to RabbitMQ
 ├── provisioner.js      # Python CLI subprocess
 ├── validation.js       # Zod schemas
 ├── config-store.js     # YAML config management

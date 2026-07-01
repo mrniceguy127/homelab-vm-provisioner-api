@@ -1,14 +1,14 @@
 /**
  * Database microservice client
  * 
- * Communicates with the homelab-vm-provisioner-db microservice
+ * Communicates with the homelab-vm-provisioner-db-interface microservice
  * instead of directly accessing PostgreSQL.
  */
 
-// Construct DB service URL from host and port
+// Construct DB service base URL from host and port components
 const DB_SERVICE_HOST = process.env.DB_SERVICE_HOST || process.env.LOCAL_HOST || 'localhost';
 const DB_SERVICE_PORT = process.env.DB_SERVICE_PORT || '3002';
-const DB_SERVICE_URL = process.env.DB_SERVICE_URL || `http://${DB_SERVICE_HOST}:${DB_SERVICE_PORT}`;
+const DB_SERVICE_BASE_URL = `http://${DB_SERVICE_HOST}:${DB_SERVICE_PORT}`;
 const DB_SERVICE_PASSWORD = process.env.DB_SERVICE_PASSWORD || 'changeme_db_secret';
 
 /**
@@ -19,7 +19,7 @@ const DB_SERVICE_PASSWORD = process.env.DB_SERVICE_PASSWORD || 'changeme_db_secr
  * @returns {Promise<any>} Response data
  */
 async function dbRequest(path, options = {}) {
-  const url = `${DB_SERVICE_URL}${path}`;
+  const url = `${DB_SERVICE_BASE_URL}${path}`;
   
   const response = await fetch(url, {
     ...options,
@@ -192,10 +192,10 @@ let globalRepository = null;
  * @returns {Promise<void>}
  */
 export async function initializeDatabase(serviceUrl = null) {
-  const url = serviceUrl || DB_SERVICE_URL;
+  const url = serviceUrl || DB_SERVICE_BASE_URL;
   
   if (!url) {
-    console.warn('DB_SERVICE_URL not set. Job queue features will be unavailable.');
+    console.warn('DB service host/port not set. Job queue features will be unavailable.');
     return;
   }
   

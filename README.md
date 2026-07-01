@@ -13,6 +13,9 @@ When this repository is checked out as part of the full `homelab-vm-provisioner`
 - `src/config-store.js`: Stores API-managed YAML configs and SSH public keys.
 - `src/network-model.js`: Persists tenant/network-group metadata, allocates `/28` subnets, and enriches saved VM configs with stable owner/network identity.
 - `src/provisioner.js`: Spawns the Python bridge and handles log reads/streams.
+- `src/db.js`: HTTP client for the DB microservice (job metadata, events, resource locks).
+- `src/job-service.js`: High-level interface for enqueueing jobs (records metadata + publishes to RabbitMQ).
+- `src/rabbitmq-publisher.js`: Publishes job messages to the RabbitMQ topic exchange.
 - `bridge/hlvmp_bridge.py`: JSON bridge into the workspace `homelab-vm-provisioner-cli` repo.
 - `../homelab-vm-provisioner-cli/`: Git submodule containing the real Python VM provisioner.
 
@@ -96,6 +99,16 @@ Default port: `3001`
 | `HLVMP_NETWORK_POOL_CIDR` | `10.80.0.0/16` | Global private pool used for managed network-group subnet allocation |
 | `HLVMP_NETWORK_GROUP_PREFIX_LENGTH` | `28` | Prefix length assigned to each new network group |
 | `HLVMP_PYTHON_BIN` | `python3` | Python executable used for the bridge process |
+| `HOST_ID` | `local` | Host identifier used as the RabbitMQ routing key (`host.<HOST_ID>`) |
+| `DB_SERVICE_HOST` | `localhost` | DB microservice host (job metadata, events, locks) |
+| `DB_SERVICE_PORT` | `3002` | DB microservice port |
+| `DB_SERVICE_PASSWORD` | unset | Shared secret for DB microservice authentication |
+| `QUEUE_HOST` | `localhost` | RabbitMQ host for publishing jobs |
+| `QUEUE_PORT` | `3334` | RabbitMQ AMQP port |
+| `QUEUE_VHOST` | `provisioner` | RabbitMQ virtual host |
+| `QUEUE_EXCHANGE` | `provisioner.jobs` | Topic exchange jobs are published to |
+| `QUEUE_API_USER` | `provisioner_api` | Publish-only RabbitMQ user |
+| `QUEUE_API_PASSWORD` | unset | Password for the publish-only RabbitMQ user |
 
 ## Provisioner Paths
 
@@ -786,15 +799,18 @@ Response `422`:
 
 # Async Job System
 
-The API integrates with a PostgreSQL-backed job queue for async VM provisioning workflows. Jobs are enqueued by the API and processed by the [worker daemon](../homelab-vm-provisioner-worker).
+The API records job metadata in the PostgreSQL-backed DB service and dispatches jobs to workers over a RabbitMQ topic exchange. Jobs are published by the API and processed by the [worker daemon](../homelab-vm-provisioner-worker).
 
 ## Architecture
 
 ```
-API (enqueues jobs) → Database Service (job queue) → Worker Daemon (executes jobs)
-                                ↓
-                          PostgreSQL
+API ──publish (AMQP)──→ RabbitMQ (job queue) ──→ Worker Daemon (executes jobs)
+  └─record metadata─→ DB Service → PostgreSQL (jobs, events, locks)
 ```
+
+The API publishes each job to the `provisioner.jobs` exchange with routing key
+`host.<HOST_ID>` and stores its metadata in the DB service. PostgreSQL is not polled
+for delivery.
 
 ## Job Types
 
@@ -814,10 +830,10 @@ The API enqueues these job types:
 
 ## Job Lifecycle
 
-1. **Queued**: API creates job via database service
-2. **Claimed**: Worker claims job using row-level locking (safe for multiple workers)
-3. **Running**: Worker marks job as running
-4. **Succeeded/Failed**: Worker updates job with result or error
+1. **Queued**: API records job metadata via the DB service
+2. **Published**: API publishes the job to RabbitMQ (routing key `host.<HOST_ID>`)
+3. **Running**: Worker consumes the job and marks it running via the API
+4. **Succeeded/Failed**: Worker updates the job with a result or error
 5. **Events**: Worker appends event log entries throughout execution
 
 ## Job Service
@@ -892,7 +908,8 @@ If RabbitMQ is not configured, job enqueue operations will fail with an error.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOST_ID` | (required) | Host identifier for job targeting |
-| `DB_SERVICE_URL` | `http://localhost:3002` | Database microservice URL |
+| `DB_SERVICE_HOST` | `localhost` | Database microservice host |
+| `DB_SERVICE_PORT` | `3002` | Database microservice port |
 | `DB_SERVICE_PASSWORD` | (required) | Database microservice password |
 | `QUEUE_HOST` | (required) | RabbitMQ host |
 | `QUEUE_PORT` | `3334` | RabbitMQ port |
@@ -910,7 +927,7 @@ The API communicates with the database microservice for all job operations:
 import { createDbClient } from './db.js';
 
 const dbClient = createDbClient({
-  baseUrl: process.env.DB_SERVICE_URL,
+  baseUrl: `http://${process.env.DB_SERVICE_HOST}:${process.env.DB_SERVICE_PORT}`,
   password: process.env.DB_SERVICE_PASSWORD
 });
 
@@ -922,7 +939,7 @@ const job = await dbClient.getJob(jobId);
 const events = await dbClient.listJobEvents(jobId);
 ```
 
-See [Database Service README](../homelab-vm-provisioner-db/README.md) for full API documentation.
+See [Database Interface README](../homelab-vm-provisioner-db-interface/README.md) for full API documentation.
 
 ## Error Handling
 
