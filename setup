@@ -3,14 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-cd "$SCRIPT_DIR"
+# Source component library
+source "$SCRIPT_DIR/scripts/lib.sh"
 
-# Source component .env (parent vars inherited through execution sequence)
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -a
-    source "$SCRIPT_DIR/.env"
-    set +a
-fi
+# Source .env
+source_env "$SCRIPT_DIR/.env"
 
 # Parse arguments
 SKIP_NPM=false
@@ -19,238 +16,86 @@ DOCKER_MODE=false
 
 for arg in "$@"; do
     case "$arg" in
-        --skip-npm)
-            SKIP_NPM=true
-            ;;
-        --skip-system-packages)
-            SKIP_SYSTEM_PACKAGES=true
-            ;;
-        --docker)
-            DOCKER_MODE=true
-            SKIP_NPM=true
-            SKIP_SYSTEM_PACKAGES=true
-            ;;
+        --skip-npm) SKIP_NPM=true ;;
+        --skip-system-packages) SKIP_SYSTEM_PACKAGES=true ;;
+        --docker) DOCKER_MODE=true; SKIP_NPM=true; SKIP_SYSTEM_PACKAGES=true ;;
         --help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Setup the API environment."
-            echo ""
-            echo "Options:"
-            echo "  --skip-npm               Skip npm install"
-            echo "  --skip-system-packages   Skip system package installation"
-            echo "  --docker                 Setup for Docker mode (skip npm install and system packages)"
-            echo "  --help                   Show this help message"
+            cat <<EOF
+Usage: $0 [OPTIONS]
+
+Setup the API environment.
+
+Options:
+  --skip-npm               Skip npm install
+  --skip-system-packages   Skip system package installation
+  --docker                 Setup for Docker mode
+  --help                   Show this help message
+EOF
             exit 0
             ;;
         *)
-            echo "Unknown option: $arg"
-            echo "Use --help for usage information"
+            error "Unknown option: $arg"
             exit 1
             ;;
     esac
 done
 
-log() {
-    printf '==> %s\n' "$*"
-}
+cd "$SCRIPT_DIR"
 
-run_sudo() {
-    if [[ "${EUID}" -eq 0 ]]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
-
-ensure_sudo_credentials() {
-    local reason="$1"
-
-    if [[ "${EUID}" -eq 0 ]]; then
-        return
-    fi
-
-    if ! command -v sudo >/dev/null 2>&1; then
-        printf 'sudo is required for this setup step but is not installed.\n' >&2
-        exit 1
-    fi
-
-    if sudo -n -v >/dev/null 2>&1; then
-        return
-    fi
-
-    if [[ ! -t 0 || ! -t 1 ]]; then
-        printf '%s\n' "$reason" >&2
-        printf 'Run this script from an interactive terminal or pre-authorize sudo with `sudo -v` first.\n' >&2
-        exit 1
-    fi
-
-    log "$reason"
-    sudo -v
-}
-
-require_cmd() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        printf 'Missing command: %s\n' "$1" >&2
-        printf 'Please install %s before running setup\n' "$1" >&2
-        exit 1
-    fi
-}
-
-require_path() {
-    if [[ ! -e "$1" ]]; then
-        printf 'Missing required path: %s\n' "$1" >&2
-        exit 1
-    fi
-}
-
-install_system_packages() {
-    if [[ ! -r /etc/os-release ]]; then
-        printf 'Unsupported distro: missing /etc/os-release\n' >&2
-        exit 1
-    fi
-
-    # shellcheck disable=SC1091
-    source /etc/os-release
-
-    log "Installing system packages for ${ID}"
-
-    case "${ID}" in
+# Install system packages
+if [[ "$SKIP_SYSTEM_PACKAGES" == "false" ]]; then
+    ensure_sudo_once "Installing system packages requires sudo."
+    
+    log "Installing Node.js"
+    install_system_packages_nodejs
+    
+    log "Installing Python"
+    install_system_packages_python
+    
+    # Install API-specific packages (libvirt, qemu, etc.)
+    log "Installing API-specific system packages"
+    os_id="$(detect_os)"
+    case "$os_id" in
         ubuntu|debian)
-            run_sudo apt update
-            run_sudo apt install -y \
-                git \
-                curl \
-                ca-certificates \
-                gnupg \
-                libvirt-daemon-system \
-                virtinst \
-                qemu-utils \
-                cloud-image-utils \
-                nftables \
-                wget \
-                openssh-client \
-                python3 \
-                python3-pip \
-                python3-venv
-            
-            # Install Node.js 18+ from NodeSource
-            if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -d. -f1 | tr -d 'v')" -lt 18 ]]; then
-                log "Installing Node.js 18.x from NodeSource"
-                if [[ ! -f /etc/apt/keyrings/nodesource.gpg ]]; then
-                    run_sudo mkdir -p /etc/apt/keyrings
-                    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | run_sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-                fi
-                echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | run_sudo tee /etc/apt/sources.list.d/nodesource.list
-                run_sudo apt update
-                run_sudo apt install -y nodejs
-            fi
+            run_sudo apt-get update
+            run_sudo apt-get install -y libvirt-daemon-system virtinst qemu-utils cloud-image-utils nftables wget openssh-client
+            run_sudo systemctl enable --now libvirtd || true
             ;;
         fedora)
-            run_sudo dnf install -y \
-                git \
-                curl \
-                ca-certificates \
-                nodejs \
-                npm \
-                qemu-kvm \
-                libvirt \
-                virt-install \
-                qemu-img \
-                cloud-utils \
-                nftables \
-                wget \
-                openssh-clients \
-                python3 \
-                python3-pip
+            run_sudo dnf install -y qemu-kvm libvirt virt-install qemu-img cloud-utils nftables wget openssh-clients
+            run_sudo systemctl enable --now libvirtd || true
             ;;
         rhel|rocky|almalinux)
             run_sudo dnf install -y epel-release
-            run_sudo dnf install -y \
-                git \
-                curl \
-                ca-certificates \
-                qemu-kvm \
-                libvirt \
-                virt-install \
-                qemu-img \
-                cloud-utils \
-                nftables \
-                wget \
-                openssh-clients \
-                python3 \
-                python3-pip
-            
-            # Install Node.js 18+ from NodeSource
-            if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -d. -f1 | tr -d 'v')" -lt 18 ]]; then
-                log "Installing Node.js 18.x from NodeSource"
-                curl -fsSL https://rpm.nodesource.com/setup_18.x | run_sudo bash -
-                run_sudo dnf install -y nodejs
-            fi
+            run_sudo dnf install -y qemu-kvm libvirt virt-install qemu-img cloud-utils nftables wget openssh-clients
+            run_sudo systemctl enable --now libvirtd || true
             ;;
         arch)
-            run_sudo pacman -Syu --needed --noconfirm \
-                git \
-                curl \
-                ca-certificates \
-                nodejs \
-                npm \
-                qemu-full \
-                libvirt \
-                virt-install \
-                cloud-image-utils \
-                nftables \
-                wget \
-                openssh \
-                python \
-                python-pip
+            run_sudo pacman -Syu --needed --noconfirm qemu-full libvirt virt-install cloud-image-utils nftables wget openssh
+            run_sudo systemctl enable --now libvirtd || true
             ;;
         *)
-            printf 'Unsupported distro: %s\n' "${ID}" >&2
-            printf 'Please install git, Node.js 18+, npm, Python, libvirt, qemu, nftables, and cloud-image-utils manually\n' >&2
-            exit 1
+            log "Warning: Unsupported OS: $os_id. Install libvirt, qemu, nftables, cloud-image-utils manually."
             ;;
     esac
-    
-    # Enable and start libvirtd service
-    if command -v systemctl >/dev/null 2>&1; then
-        run_sudo systemctl enable --now libvirtd
-    fi
-}
-
-# Install system packages if not skipped
-if [[ "$SKIP_SYSTEM_PACKAGES" == "false" ]]; then
-    ensure_sudo_credentials "Installing API system packages requires sudo access. Confirm it now before package installation begins."
-    install_system_packages
 fi
 
 log "Setting up API environment"
 
-# Check for Node.js (required even if system packages were skipped)
+# Verify Node.js if system packages were skipped
 if [[ "$SKIP_SYSTEM_PACKAGES" == "true" && "$DOCKER_MODE" == "false" ]]; then
     require_cmd node
     require_cmd npm
-
     NODE_VERSION=$(node -v | cut -d. -f1 | tr -d 'v')
-    if [[ "$NODE_VERSION" -lt 18 ]]; then
-        printf 'Node.js 18+ required, found: %s\n' "$(node -v)" >&2
-        exit 1
-    fi
+    [[ "$NODE_VERSION" -lt 18 ]] && error "Node.js 18+ required, found: $(node -v)" && exit 1
 fi
 
+# Install npm packages
 if [[ "$SKIP_NPM" == "false" ]]; then
-    log "Installing API npm packages"
+    log "Installing npm packages"
     npm install
-else
-    log "Skipping npm install"
 fi
 
 log "API setup complete"
 
-if [[ "$DOCKER_MODE" == "true" ]]; then
-    log "Docker mode: Use './build --docker' to build the API image"
-    log "Start with: ./start --docker"
-else
-    log "Build docs with: npm run build"
-    log "Start API with: npm start or PORT=3001 npm start"
-    log "Run tests with: npm test"
-fi
+[[ "$DOCKER_MODE" == "true" ]] && log "Build with: ./build --docker" || log "Start with: npm start"
