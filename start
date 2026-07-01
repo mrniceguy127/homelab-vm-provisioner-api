@@ -91,14 +91,16 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
         "$SCRIPT_DIR/build" --docker
     fi
 
-    API_DB_SERVICE_URL="${DB_SERVICE_URL:-}"
-    if [[ -z "$API_DB_SERVICE_URL" || "$API_DB_SERVICE_URL" == "http://localhost:$DB_SERVICE_PORT" ]]; then
-        API_DB_SERVICE_URL="http://172.17.0.1:$DB_SERVICE_PORT"
+    # For Docker mode, use 172.17.0.1 if DB_SERVICE_HOST is localhost or not set
+    API_DB_SERVICE_HOST="${DB_SERVICE_HOST:-localhost}"
+    if [[ "$API_DB_SERVICE_HOST" == "localhost" ]]; then
+        API_DB_SERVICE_HOST="172.17.0.1"
     fi
 
     DOCKER_ENV_ARGS=(
         -e PORT="$API_PORT"
-        -e DB_SERVICE_URL="$API_DB_SERVICE_URL"
+        -e DB_SERVICE_HOST="$API_DB_SERVICE_HOST"
+        -e DB_SERVICE_PORT="${DB_SERVICE_PORT:-3002}"
         -e DB_SERVICE_PASSWORD="${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         -e HOST_ID="${HOST_ID:-local}"
         -e QUEUE_HOST="${QUEUE_HOST:-}"
@@ -113,7 +115,8 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
     DESIRED_IMAGE_ID="$(docker_image_id homelab-vm-provisioner-api:latest)"
     DESIRED_CONFIG_HASH="$({
         printf 'API_PORT=%s\n' "$API_PORT"
-        printf 'DB_SERVICE_URL=%s\n' "$API_DB_SERVICE_URL"
+        printf 'DB_SERVICE_HOST=%s\n' "$API_DB_SERVICE_HOST"
+        printf 'DB_SERVICE_PORT=%s\n' "${DB_SERVICE_PORT:-3002}"
         printf 'DB_SERVICE_PASSWORD=%s\n' "${DB_SERVICE_PASSWORD:-changeme_db_secret}"
         printf 'HOST_ID=%s\n' "${HOST_ID:-local}"
         printf 'QUEUE_HOST=%s\n' "${QUEUE_HOST:-}"
@@ -146,7 +149,7 @@ if [[ "$DOCKER_MODE" == "true" ]]; then
 
     log "Starting API container"
     log "  Port: $API_PORT"
-    log "  DB Service URL: $API_DB_SERVICE_URL"
+    log "  DB Service: ${API_DB_SERVICE_HOST}:${DB_SERVICE_PORT:-3002}"
     if [[ -n "${QUEUE_HOST:-}" && -n "${QUEUE_API_USER:-}" ]]; then
         log "  RabbitMQ: ${QUEUE_HOST}:${QUEUE_PORT} (vhost: ${QUEUE_VHOST})"
     else

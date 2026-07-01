@@ -215,6 +215,7 @@ export function createApp(deps = defaultDependencies, options = {}) {
 
   // Initialize job service if database is available
   const hostId = process.env.HOST_ID || null;
+  console.log('[APP_INIT] HOST_ID from environment:', JSON.stringify(process.env.HOST_ID), '-> hostId:', JSON.stringify(hostId));
   const rabbitMqPublisher = options.rabbitMqPublisher || null;
   let jobService = null;
   
@@ -449,6 +450,11 @@ export function createApp(deps = defaultDependencies, options = {}) {
       }
       
       // Enqueue job
+      console.log('[DEBUG] Creating job with:', JSON.stringify({
+        vmName: savedConfig.vmName,
+        target_host_id: hostId,
+        jobOptions: { targetVmId: savedConfig.vmName, maxAttempts: 3, targetHostId: hostId }
+      }));
       const persisted = await deps.upsertStoredVmDefinitionAndEnqueueJob(
         {
           vm_name: savedConfig.vmName,
@@ -463,7 +469,18 @@ export function createApp(deps = defaultDependencies, options = {}) {
         { vmName: savedConfig.vmName },
         { targetVmId: savedConfig.vmName, maxAttempts: 3, targetHostId: hostId },
       );
+      console.log('[DEBUG] Job created:', JSON.stringify({ id: persisted.job.id, target_host_id: persisted.job.target_host_id, status: persisted.job.status }));
       const job = persisted.job;
+      
+      // Publish job to RabbitMQ if job service is available
+      if (jobService) {
+        try {
+          await jobService.publishExistingJob(job);
+        } catch (error) {
+          console.error('[ERROR] Failed to publish job to RabbitMQ:', error);
+          // Don't fail the request - job is created and can be retried later
+        }
+      }
       
       response.status(202).json({
         ...savedConfig,

@@ -37,8 +37,8 @@ export function createInternalWorkerRouter({ repository, hostId: _hostId, logger
     
     // Validate target host matches (if configured)
     const workerHostId = req.body.worker_host_id || req.body.host_id;
-    if (workerHostId && job.target_host_id !== workerHostId) {
-      logger.warn(`Worker host mismatch: job targets ${job.target_host_id}, worker reports ${workerHostId}`);
+    if (workerHostId && job.targetHostId !== workerHostId) {
+      logger.warn(`Worker host mismatch: job targets ${job.targetHostId}, worker reports ${workerHostId}`);
       return res.status(403).json({ error: 'Worker host ID does not match job target host' });
     }
     

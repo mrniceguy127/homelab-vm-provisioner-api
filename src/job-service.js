@@ -97,6 +97,22 @@ export function createJobService({ repository, hostId, rabbitMqPublisher = null,
   
   return {
     /**
+     * Publish an existing job to RabbitMQ
+     * 
+     * @param {object} job - Job object to publish (with camelCase properties from DB)
+     * @returns {Promise<void>}
+     */
+    async publishExistingJob(job) {
+      // Convert camelCase properties to snake_case for rabbitmq publisher
+      const jobForPublish = {
+        id: job.id,
+        type: job.type,
+        target_host_id: job.targetHostId
+      };
+      await publishJobToQueue(jobForPublish);
+    },
+    
+    /**
      * Enqueue a VM provision job
      * 
      * @param {string} vmName - VM name
